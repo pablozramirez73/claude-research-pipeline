@@ -74,6 +74,19 @@ curl -fsSL https://raw.githubusercontent.com/pablozramirez73/claude-research-pip
 ./VitalFace/scripts/run-with-cloudflare-tunnel.sh
 ```
 
+Su Windows è disponibile lo stesso script in PowerShell 7+ (`scripts/run-with-cloudflare-tunnel.ps1`),
+con la stessa logica (clone/aggiornamento del branch, build, i due tunnel, il riavvio incrociato
+di api/kiosk):
+
+```powershell
+irm https://raw.githubusercontent.com/pablozramirez73/claude-research-pipeline/claude/vitalface-station-app-s60ij3/VitalFace/scripts/run-with-cloudflare-tunnel.ps1 | iex
+# oppure, se hai già clonato il branch:
+.\VitalFace\scripts\run-with-cloudflare-tunnel.ps1
+```
+
+Richiede Docker Desktop e PowerShell 7+ (`winget install Microsoft.PowerShell`); installa
+`cloudflared` da solo via `winget` o, in mancanza, scaricando il binario ufficiale.
+
 Perché due tunnel e non uno: un Cloudflare Quick Tunnel espone un solo servizio locale per
 hostname pubblico, quindi API e kiosk finiscono su due hostname `*.trycloudflare.com` diversi.
 Lo script gestisce la dipendenza incrociata: avvia prima l'API, apre il suo tunnel, poi
