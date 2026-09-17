@@ -60,6 +60,29 @@ automatico all'avvio di un container di produzione è un rischio (race condition
 multiple, downtime non controllato). Il release process reale deve eseguire
 `dotnet ef database update` come step esplicito prima del rollout.
 
+### Esporre il kiosk pubblicamente con un Cloudflare Quick Tunnel
+
+`scripts/run-with-cloudflare-tunnel.sh` clona (o aggiorna) questo branch, builda e avvia
+`docker compose`, poi apre due Cloudflare Quick Tunnel (nessun account Cloudflare richiesto): uno
+per l'API e uno per il kiosk. Va eseguito su una macchina con accesso reale a Internet — un
+sandbox CI/agent con un proxy in uscita restrittivo tipicamente blocca sia il download del binario
+`cloudflared` sia il protocollo del tunnel stesso.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/pablozramirez73/claude-research-pipeline/claude/vitalface-station-app-s60ij3/VitalFace/scripts/run-with-cloudflare-tunnel.sh | bash
+# oppure, se hai già clonato il branch:
+./VitalFace/scripts/run-with-cloudflare-tunnel.sh
+```
+
+Perché due tunnel e non uno: un Cloudflare Quick Tunnel espone un solo servizio locale per
+hostname pubblico, quindi API e kiosk finiscono su due hostname `*.trycloudflare.com` diversi.
+Lo script gestisce la dipendenza incrociata: avvia prima l'API, apre il suo tunnel, poi
+(ri)crea il container del kiosk iniettando quell'URL come `API_BASE_URL` (rigenerato a runtime da
+un entrypoint `envsubst`, vedi `VitalFace.Web/docker/docker-entrypoint.sh` — nessun rebuild
+dell'immagine necessario), apre il tunnel del kiosk, e infine riavvia l'API con il CORS
+(`Cors:KioskOrigins`) aggiornato all'origine pubblica del kiosk. Gli URL sono temporanei e HTTPS
+(necessario per l'accesso alla webcam via `getUserMedia`), e cambiano ad ogni riavvio dello script.
+
 ## Cosa è stato verificato in questa sessione
 
 Ambiente sandbox senza accesso alle CDN Microsoft/jsdelivr (policy di rete dell'agente), quindi la

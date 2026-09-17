@@ -22,7 +22,7 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=vitalface;Username=vitalface;Password=${VITALFACE_DB_PASSWORD:?set VITALFACE_DB_PASSWORD in a .env file}"
-      Cors__KioskOrigins__0: "http://localhost:8081"
+      Cors__KioskOrigins__0: "${VITALFACE_WEB_ORIGIN:-http://localhost:8081}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -33,6 +33,11 @@ services:
     build:
       context: .
       dockerfile: src/VitalFace.Web/Dockerfile
+    environment:
+      # Regenerated from a template at container start (see docker/docker-entrypoint.sh) — can
+      # point at a Cloudflare tunnel URL without rebuilding the image.
+      API_BASE_URL: "${VITALFACE_API_BASE_URL:-http://localhost:8080/}"
+      VITALFACE_LOCATION_ID: "${VITALFACE_LOCATION_ID:-Postazione non configurata}"
     ports:
       - "8081:8080"
     depends_on:
