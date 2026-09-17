@@ -19,7 +19,10 @@ COPY --from=build /app/publish/wwwroot /usr/share/nginx/html
 COPY src/VitalFace.Web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY src/VitalFace.Web/docker/appsettings.Production.template.json /usr/share/nginx/html/appsettings.Production.template.json
 COPY src/VitalFace.Web/docker/docker-entrypoint.sh /docker-entrypoint.sh
-RUN chmod +x /docker-entrypoint.sh
+# Defensive normalization: strips any CRLF line endings a Windows checkout (autocrlf=true) may
+# have introduced despite .gitattributes — without this, Linux fails to exec the script with a
+# misleading "no such file or directory" because the shebang becomes "#!/bin/sh\r".
+RUN sed -i 's/\r$//' /docker-entrypoint.sh && chmod +x /docker-entrypoint.sh
 
 EXPOSE 8080
 ENTRYPOINT ["/docker-entrypoint.sh"]

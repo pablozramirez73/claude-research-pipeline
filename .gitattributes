@@ -1,0 +1,12 @@
+# Let Git decide text vs. binary and use the platform-native line ending on checkout for
+# everything by default...
+* text=auto
+
+# ...except files that get executed by a Unix shell inside a Linux container or CI runner, which
+# must always keep LF endings regardless of core.autocrlf on the machine that checked them out.
+# A Windows clone with autocrlf=true otherwise turns "#!/bin/sh" into "#!/bin/sh\r", and Linux
+# reports that as "no such file or directory" — a famously misleading error for what is actually
+# just a line-ending problem, not a missing file.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.dockerfile text eol=lf
