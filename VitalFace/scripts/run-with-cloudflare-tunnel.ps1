@@ -96,7 +96,10 @@ function Wait-ForHttp {
     param([string]$Url, [string]$Label, [string]$Service, [int]$Attempts = 60)
     for ($i = 0; $i -lt $Attempts; $i++) {
         try {
-            $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 3
+            # -NoProxy: a system/VPN proxy (common on corporate Windows machines) would otherwise
+            # try to route this localhost request through itself and fail, even though the
+            # container is perfectly healthy and reachable directly.
+            $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 3 -NoProxy
             if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) { return }
         }
         catch { }

@@ -156,7 +156,9 @@ verify_port_published "api" "8080" "$API_PORT"
 wait_for_http() {
     url="$1"; label="$2"; service="$3"; total_attempts=60; attempts="$total_attempts"
     while [ "$attempts" -gt 0 ]; do
-        if curl -fsS -o /dev/null "$url" 2>/dev/null; then
+        # --noproxy '*': a system-configured proxy would otherwise try to route this localhost
+        # request through itself and fail, even though the container is perfectly reachable directly.
+        if curl -fsS --noproxy '*' -o /dev/null "$url" 2>/dev/null; then
             return 0
         fi
         if [ $(( (total_attempts - attempts) % 5 )) -eq 0 ] && [ "$attempts" -ne "$total_attempts" ]; then
