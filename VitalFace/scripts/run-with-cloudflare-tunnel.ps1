@@ -61,6 +61,12 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# PowerShell 7.3+ can turn ANY non-zero exit code from a native command (docker, git, cloudflared)
+# into an immediate terminating exception when $ErrorActionPreference is 'Stop' — silently
+# short-circuiting this script's own "if ($LASTEXITCODE -ne 0) { Fail ... }" checks before they
+# ever run, with no visible message. This script is written entirely around checking
+# $LASTEXITCODE itself, so restore that classic behavior explicitly.
+$PSNativeCommandUseErrorActionPreference = $false
 
 # Resolve to an absolute path up front regardless of the current working directory, and regardless
 # of whether -TargetDir was left at its default or passed explicitly (possibly as a relative path)
@@ -221,6 +227,7 @@ function Test-PortPublished {
     }
 }
 
+try {
 # --- 1. Prerequisiti --------------------------------------------------------
 
 if (-not (Test-CommandExists 'git')) { Fail 'git non è installato.' }
@@ -384,4 +391,15 @@ finally {
     if ($script:WebTunnelProcess -and -not $script:WebTunnelProcess.HasExited) {
         Stop-Process -Id $script:WebTunnelProcess.Id -Force -ErrorAction SilentlyContinue
     }
+}
+}
+catch {
+    # Last-resort safety net: anything that throws anywhere above and isn't already one of our
+    # own Fail() calls (Fail exits directly, so it never reaches here) lands here instead of
+    # silently dropping back to the prompt with no explanation — which is exactly what made the
+    # earlier "it just stops with no error" reports so hard to diagnose.
+    Write-Host ""
+    Write-Host "Errore PowerShell non gestito: $($_.Exception.GetType().FullName): $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host $_.ScriptStackTrace -ForegroundColor Red
+    exit 1
 }
