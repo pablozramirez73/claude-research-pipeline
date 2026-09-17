@@ -1,0 +1,204 @@
+:root {
+    --vf-bg: #03060f;
+    --vf-panel: #0c1730;
+    --vf-accent: #2f6fed;
+    --vf-danger: #dc3f4c;
+    --vf-success: #35b273;
+    --vf-text: #eaf0ff;
+    --vf-text-muted: #9fb0d0;
+}
+
+html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--vf-bg);
+    color: var(--vf-text);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    overflow: hidden;
+}
+
+#app {
+    height: 100vh;
+}
+
+.kiosk-root {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    user-select: none;
+    touch-action: manipulation;
+}
+
+.video-container, .viz-container {
+    position: absolute;
+    top: 0;
+    height: 60vh;
+    width: 45vw;
+    border-radius: 16px;
+    overflow: hidden;
+    background: #000;
+}
+
+.video-container { left: 4vw; top: 8vh; }
+.viz-container { right: 4vw; top: 8vh; }
+
+.video-container.is-hidden, .viz-container.is-hidden {
+    display: none;
+}
+
+.stage {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1.25rem;
+    max-width: 720px;
+    padding: 2rem;
+    text-align: center;
+}
+
+.stage-idle h1 {
+    font-size: 3rem;
+    margin: 0;
+    letter-spacing: 0.02em;
+    outline: none; /* Blazor's FocusOnNavigate focuses this on route change; a visible ring on a
+                       kiosk's single static route is just visual noise for touch-only users. */
+}
+
+.stage-idle p {
+    color: var(--vf-text-muted);
+    font-size: 1.25rem;
+}
+
+.stage-countdown, .stage-capturing {
+    margin-top: 68vh;
+}
+
+.countdown-number {
+    font-size: 5rem;
+    font-weight: 700;
+    margin: 0;
+}
+
+.capture-progress {
+    width: 60vw;
+    height: 1.5rem;
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.capture-progress::-webkit-progress-bar { background: var(--vf-panel); border-radius: 999px; }
+.capture-progress::-webkit-progress-value { background: var(--vf-accent); border-radius: 999px; }
+
+.btn-primary, .btn-secondary {
+    font-size: 1.35rem;
+    padding: 0.9rem 2.2rem;
+    border-radius: 999px;
+    border: none;
+    cursor: pointer;
+    min-height: 64px;
+    min-width: 220px;
+}
+
+.btn-primary {
+    background: var(--vf-accent);
+    color: white;
+    font-weight: 600;
+}
+
+.btn-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.btn-secondary {
+    background: transparent;
+    color: var(--vf-text);
+    border: 2px solid var(--vf-text-muted);
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.signature-pad {
+    width: min(90vw, 640px);
+    height: 220px;
+    background: #fff;
+    border-radius: 12px;
+    border: 2px solid var(--vf-panel);
+}
+
+.field-error {
+    color: var(--vf-danger);
+    font-weight: 600;
+}
+
+.consent-actions, .result-actions {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+.result-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(160px, 1fr));
+    gap: 1rem;
+    width: 100%;
+}
+
+.result-tile {
+    background: var(--vf-panel);
+    border-radius: 12px;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.result-label {
+    color: var(--vf-text-muted);
+    font-size: 0.95rem;
+}
+
+.result-value {
+    font-size: 1.75rem;
+    font-weight: 700;
+}
+
+.stage-critical .result-value {
+    color: var(--vf-danger);
+}
+
+.stage-normal .result-value {
+    color: var(--vf-success);
+}
+
+.critical-reasons {
+    color: var(--vf-danger);
+    text-align: left;
+    font-size: 1.1rem;
+}
+
+.disclaimer {
+    color: var(--vf-text-muted);
+    font-size: 0.85rem;
+    max-width: 560px;
+}
+
+.disclaimer-strong {
+    color: var(--vf-danger);
+    font-weight: 600;
+    font-size: 1rem;
+}
+
+.spinner {
+    font-size: 1.5rem;
+    color: var(--vf-text-muted);
+}
