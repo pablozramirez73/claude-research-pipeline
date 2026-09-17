@@ -27,6 +27,11 @@
 
 set -euo pipefail
 
+# Resolved before anything else touches the working directory, so it stays accurate regardless of
+# any later 'cd' — needed below to detect whether this script is running from inside the very repo
+# checkout it's about to 'git pull' (see the self-relaunch step after step 2).
+SCRIPT_ABS_PATH="$(cd "$(dirname "$0")" >/dev/null 2>&1 && pwd)/$(basename "$0")"
+
 REPO_URL="${REPO_URL:-https://github.com/pablozramirez73/claude-research-pipeline.git}"
 BRANCH="${BRANCH:-claude/vitalface-station-app-s60ij3}"
 # A fixed, absolute default (not a "./..." path) on purpose: re-running this script from a
@@ -55,15 +60,6 @@ case "$TARGET_DIR" in
         die "Il percorso di destinazione ('$TARGET_DIR') contiene più volte 'claude-research-pipeline' annidato — segno che una precedente esecuzione è stata lanciata da dentro un clone già esistente. Cancella quella cartella annidata, poi rilancia (userà '$HOME/VitalFaceStation/claude-research-pipeline' come percorso pulito e stabile)."
         ;;
 esac
-
-# Duplicate ALL of this script's output (stdout+stderr) to a log file, on top of the terminal, so a
-# full run survives copy/paste issues, a closed terminal, or scrollback too short to hold a whole
-# `docker compose build` — this has been the single biggest obstacle in diagnosing failures so far,
-# since it means the exact output can just be attached/pasted from a file instead of re-typed.
-LOG_FILE="${LOG_FILE:-$(dirname "$TARGET_DIR")/vitalface-run.log}"
-mkdir -p "$(dirname "$LOG_FILE")"
-exec > >(tee -a "$LOG_FILE") 2>&1
-log "Log completo di questa esecuzione: $LOG_FILE"
 
 cleanup() {
     if [ -n "$API_TUNNEL_PID" ]; then kill "$API_TUNNEL_PID" 2>/dev/null || true; fi
@@ -104,6 +100,31 @@ else
     mkdir -p "$(dirname "$TARGET_DIR")"
     git clone --branch "$BRANCH" --single-branch "$REPO_URL" "$TARGET_DIR"
 fi
+
+# Self-relaunch from the just-updated file when this script is itself the file 'git pull' above may
+# have just changed. Bash (like most shells) doesn't re-read a script from disk mid-execution — it
+# keeps running whatever it already parsed — so without this, a fetched fix (like the one that
+# added this exact log-file feature) would silently NOT take effect until a second, separate run.
+# 'exec' replaces this process with the new one (no lingering parent), and the guard env var stops
+# an infinite relaunch loop.
+case "$SCRIPT_ABS_PATH" in
+    "$TARGET_DIR"/*)
+        if [ -z "${VITALFACE_TUNNEL_RELAUNCHED:-}" ]; then
+            export VITALFACE_TUNNEL_RELAUNCHED=1 REPO_URL BRANCH TARGET_DIR API_PORT WEB_PORT
+            log "Codice aggiornato da GitHub — rilancio lo script dalla versione appena scaricata"
+            exec bash "$SCRIPT_ABS_PATH"
+        fi
+        ;;
+esac
+
+# Duplicate ALL of this script's output (stdout+stderr) to a log file, on top of the terminal, so a
+# full run survives copy/paste issues, a closed terminal, or scrollback too short to hold a whole
+# `docker compose build` — this has been the single biggest obstacle in diagnosing failures so far,
+# since it means the exact output can just be attached/pasted from a file instead of re-typed.
+LOG_FILE="${LOG_FILE:-$(dirname "$TARGET_DIR")/vitalface-run.log}"
+mkdir -p "$(dirname "$LOG_FILE")"
+exec > >(tee -a "$LOG_FILE") 2>&1
+log "Log completo di questa esecuzione: $LOG_FILE"
 
 cd "$TARGET_DIR/VitalFace"
 URLS_FILE="$(pwd)/vitalface-tunnel-urls.txt"

@@ -248,15 +248,6 @@ if ($TargetDir -like "*claude-research-pipeline*claude-research-pipeline*") {
     Fail "Il percorso di destinazione risolto ('$TargetDir') contiene piu' volte 'claude-research-pipeline' annidato — segno che una precedente esecuzione e' stata lanciata da dentro un clone gia' esistente. Cancella quella cartella annidata ed esegui questo script di nuovo (userà '$([System.IO.Path]::GetFullPath((Join-Path $HOME 'VitalFaceStation/claude-research-pipeline')))' come percorso pulito e stabile)."
 }
 
-# Duplicate ALL of this script's console output to a log file, on top of the terminal, so a full
-# run survives copy/paste issues, a closed terminal, or scrollback too short to hold a whole
-# `docker compose build` — this has been the single biggest obstacle in diagnosing failures so far,
-# since it means the exact output can just be attached/pasted from a file instead of re-typed.
-$LogFile = Join-Path (Split-Path $TargetDir -Parent) 'vitalface-run.log'
-New-Item -ItemType Directory -Force -Path (Split-Path $LogFile -Parent) | Out-Null
-try { Start-Transcript -Path $LogFile -Append -IncludeInvocationHeader | Out-Null }
-catch { Write-Host "Attenzione: impossibile avviare il log su file ($($_.Exception.Message))" -ForegroundColor Yellow }
-
 $script:CloudflaredPath = $null
 $script:ApiTunnelProcess = $null
 $script:WebTunnelProcess = $null
@@ -290,6 +281,31 @@ else {
     git clone --branch $Branch --single-branch $RepoUrl $TargetDir
     if ($LASTEXITCODE -ne 0) { Fail 'git clone fallito.' }
 }
+
+# Self-relaunch from the just-updated file when this script is itself the file 'git pull' above may
+# have just changed. PowerShell parses a script into an AST once, at the start of execution, and
+# keeps running that same parsed copy for the rest of the run — it never notices the file on disk
+# changing mid-run — so without this, a fetched fix (like the one that added this exact log-file
+# feature) would silently NOT take effect until a second, separate run. This only applies when
+# running from the self-updating file directly ($PSCommandPath is empty when piped into iex, which
+# is already always-fresh); the env var guards against relaunching forever.
+if (-not $env:VITALFACE_TUNNEL_RELAUNCHED -and $PSCommandPath -and
+    $PSCommandPath.StartsWith($TargetDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+    $env:VITALFACE_TUNNEL_RELAUNCHED = '1'
+    Write-Step 'Codice aggiornato da GitHub — rilancio lo script dalla versione appena scaricata'
+    $pwshExe = (Get-Process -Id $PID).Path
+    & $pwshExe -NoProfile -File $PSCommandPath -RepoUrl $RepoUrl -Branch $Branch -TargetDir $TargetDir -ApiPort $ApiPort -WebPort $WebPort
+    exit $LASTEXITCODE
+}
+
+# Duplicate ALL of this script's console output to a log file, on top of the terminal, so a full
+# run survives copy/paste issues, a closed terminal, or scrollback too short to hold a whole
+# `docker compose build` — this has been the single biggest obstacle in diagnosing failures so far,
+# since it means the exact output can just be attached/pasted from a file instead of re-typed.
+$LogFile = Join-Path (Split-Path $TargetDir -Parent) 'vitalface-run.log'
+New-Item -ItemType Directory -Force -Path (Split-Path $LogFile -Parent) | Out-Null
+try { Start-Transcript -Path $LogFile -Append -IncludeInvocationHeader | Out-Null }
+catch { Write-Host "Attenzione: impossibile avviare il log su file ($($_.Exception.Message))" -ForegroundColor Yellow }
 
 Set-Location (Join-Path $TargetDir 'VitalFace')
 $script:UrlsFile = Join-Path (Get-Location).Path 'vitalface-tunnel-urls.txt'
