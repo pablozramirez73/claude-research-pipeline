@@ -21,6 +21,10 @@ services:
       dockerfile: src/VitalFace.Api/Dockerfile
     environment:
       ASPNETCORE_ENVIRONMENT: Production
+      # Single-instance demo/tunnel deployment: fine to auto-migrate at startup. A real
+      # multi-replica rollout should set this to false and run migrations as its own release
+      # step instead (see Program.cs).
+      AutoMigrate: "true"
       ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=vitalface;Username=vitalface;Password=${VITALFACE_DB_PASSWORD:?set VITALFACE_DB_PASSWORD in a .env file}"
       Cors__KioskOrigins__0: "${VITALFACE_WEB_ORIGIN:-http://localhost:8081}"
     depends_on:

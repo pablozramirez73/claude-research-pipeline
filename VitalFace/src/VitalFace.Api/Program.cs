@@ -1,5 +1,7 @@
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
 using VitalFace.Api.Endpoints;
+using VitalFace.Api.HealthChecks;
 using VitalFace.Core.Abstractions;
 using VitalFace.Core.Services;
 using VitalFace.Infrastructure.DependencyInjection;
@@ -30,7 +32,7 @@ builder.Services.AddCors(options =>
 });
 
 builder.Services.AddHealthChecks()
-    .AddDbContextCheck<VitalFaceDbContext>();
+    .AddCheck<DatabaseConnectivityHealthCheck>("database");
 
 var app = builder.Build();
 
@@ -40,15 +42,56 @@ app.UseCors("KioskClients");
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
+}
 
-    // Applies pending EF Core migrations automatically in local/dev only — production
-    // deployments run migrations explicitly as a release step (see Dockerfile / CI).
+// Applies pending EF Core migrations at startup. Defaults to Development, but is explicitly
+// opted into for the single-instance docker-compose/tunnel-script deployment (see
+// docker-compose.yml's AutoMigrate=true) purely for convenience — a real multi-replica
+// production rollout should turn this off and run migrations as an explicit release step
+// instead (a rolling deploy with several instances racing to apply the same migration is a
+// real risk this flag is not meant to cover).
+var shouldAutoMigrate = builder.Configuration.GetValue<bool?>("AutoMigrate") ?? app.Environment.IsDevelopment();
+if (shouldAutoMigrate)
+{
     using var scope = app.Services.CreateScope();
-    await scope.ServiceProvider.GetRequiredService<VitalFaceDbContext>().Database.MigrateAsync();
+    try
+    {
+        await scope.ServiceProvider.GetRequiredService<VitalFaceDbContext>().Database.MigrateAsync();
+    }
+    catch (Exception ex)
+    {
+        // Don't let a migration failure (e.g. bad DB credentials, DB unreachable) crash the whole
+        // app before it can even serve a request — keep starting so /health reports the same
+        // underlying error immediately and diagnosably, instead of an unhandled-exception crash
+        // with no HTTP surface to inspect at all.
+        app.Logger.LogError(ex, "Failed to apply EF Core migrations at startup.");
+    }
 }
 
 app.MapVitalsEndpoints();
-app.MapHealthChecks("/health");
+app.MapHealthChecks("/health", new HealthCheckOptions
+{
+    ResponseWriter = async (context, report) =>
+    {
+        // The default health check response is just the bare status word ("Healthy" /
+        // "Unhealthy"), which is useless for diagnosing *why* — e.g. a DB auth failure vs. the
+        // database being unreachable vs. migrations not having run. Surface each check's
+        // exception message instead.
+        context.Response.ContentType = "application/json";
+        var payload = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            status = report.Status.ToString(),
+            checks = report.Entries.Select(entry => new
+            {
+                name = entry.Key,
+                status = entry.Value.Status.ToString(),
+                description = entry.Value.Description,
+                error = entry.Value.Exception?.Message
+            })
+        });
+        await context.Response.WriteAsync(payload);
+    }
+});
 
 app.Run();
 
