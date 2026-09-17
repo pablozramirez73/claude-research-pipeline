@@ -96,6 +96,19 @@ dell'immagine necessario), apre il tunnel del kiosk, e infine riavvia l'API con 
 (`Cors:KioskOrigins`) aggiornato all'origine pubblica del kiosk. Gli URL sono temporanei e HTTPS
 (necessario per l'accesso alla webcam via `getUserMedia`), e cambiano ad ogni riavvio dello script.
 
+**Se una porta host (8080/8081) è già occupata da un altro processo**: lo script rileva il
+problema subito dopo l'avvio del container (`docker compose port` non torna nulla) e si ferma con
+un errore chiaro invece di procedere verso un timeout confuso — è la causa più comune di "il tunnel
+non parte mai" su Windows (spesso per via degli intervalli di porte riservati da Hyper-V, o
+semplicemente un'altra app già in ascolto lì). Rilancia specificando porte diverse:
+
+```bash
+API_PORT=18080 WEB_PORT=18081 ./run-with-cloudflare-tunnel.sh
+```
+```powershell
+.\run-with-cloudflare-tunnel.ps1 -ApiPort 18080 -WebPort 18081
+```
+
 ## Cosa è stato verificato in questa sessione
 
 Ambiente sandbox senza accesso alle CDN Microsoft/jsdelivr (policy di rete dell'agente), quindi la

@@ -27,17 +27,30 @@
 .PARAMETER TargetDir
     Local directory to clone into (or reuse if it already exists). Defaults to .\claude-research-pipeline.
 
+.PARAMETER ApiPort
+    Host port for the API. Defaults to 8080. Change this if 8080 is already used by something else
+    on your machine (another app, a VPN client, sometimes a Windows/Hyper-V reserved port range) —
+    that shows up as the API container running fine but never actually reachable on localhost.
+
+.PARAMETER WebPort
+    Host port for the kiosk. Defaults to 8081. Same caveat as ApiPort.
+
 .EXAMPLE
     .\run-with-cloudflare-tunnel.ps1
 
 .EXAMPLE
     .\run-with-cloudflare-tunnel.ps1 -Branch main -TargetDir C:\src\vitalface
+
+.EXAMPLE
+    .\run-with-cloudflare-tunnel.ps1 -ApiPort 18080 -WebPort 18081
 #>
 [CmdletBinding()]
 param(
     [string]$RepoUrl = 'https://github.com/pablozramirez73/claude-research-pipeline.git',
     [string]$Branch = 'claude/vitalface-station-app-s60ij3',
-    [string]$TargetDir = '.\claude-research-pipeline'
+    [string]$TargetDir = '.\claude-research-pipeline',
+    [int]$ApiPort = 8080,
+    [int]$WebPort = 8081
 )
 
 $ErrorActionPreference = 'Stop'
@@ -137,6 +150,23 @@ function Start-CloudflaredTunnel {
         -NoNewWindow -PassThru
 }
 
+function Test-PortPublished {
+    # After bringing a service up, confirms Docker actually published its host port — not just
+    # that the container is running. A host port already held by something outside Docker/Compose
+    # (another app, a leftover process, sometimes a Windows/Hyper-V reserved range) can make
+    # `docker compose up` succeed while silently failing to publish, which otherwise looks
+    # identical to "the app is slow to start": you get a real-looking (but wrong) HTTP response
+    # instead of a clear connection error.
+    param([string]$Service, [int]$ContainerPort, [int]$HostPort)
+    $published = docker compose port $Service $ContainerPort 2>$null
+    if (-not $published) {
+        Fail ("Docker non ha pubblicato la porta $ContainerPort di '$Service' sulla porta host $HostPort. " +
+            "Causa probabile: un altro processo (non Docker) sta gia' usando la porta $HostPort sul tuo computer. " +
+            "Verifica con 'netstat -ano | findstr :$HostPort', poi rilancia con " +
+            "-$(($Service).Substring(0,1).ToUpper() + $Service.Substring(1))Port <altra porta> (es. 18080).")
+    }
+}
+
 # --- 1. Prerequisiti --------------------------------------------------------
 
 if (-not (Test-CommandExists 'git')) { Fail 'git non è installato.' }
@@ -171,6 +201,9 @@ if (-not (Select-String -Path $EnvFile -Pattern '^VITALFACE_DB_PASSWORD=' -Quiet
     Write-Step 'Genero una password per PostgreSQL in .env'
     Set-EnvFileVar -Path $EnvFile -Key 'VITALFACE_DB_PASSWORD' -Value ([System.Guid]::NewGuid().ToString('N') + [System.Guid]::NewGuid().ToString('N'))
 }
+
+Set-EnvFileVar -Path $EnvFile -Key 'VITALFACE_API_PORT' -Value $ApiPort
+Set-EnvFileVar -Path $EnvFile -Key 'VITALFACE_WEB_PORT' -Value $WebPort
 
 # --- 4. Installa cloudflared se manca ---------------------------------------
 
@@ -218,14 +251,15 @@ if ($LASTEXITCODE -ne 0) { Fail 'docker compose build fallito.' }
 Write-Step 'Avvio PostgreSQL e l''API'
 docker compose up -d postgres api
 if ($LASTEXITCODE -ne 0) { Fail 'docker compose up (postgres, api) fallito.' }
+Test-PortPublished -Service 'api' -ContainerPort 8080 -HostPort $ApiPort
 
-Wait-ForHttp -Url 'http://localhost:8080/health' -Label "L'API" -Service 'api'
-Write-Step 'API pronta su http://localhost:8080'
+Wait-ForHttp -Url "http://localhost:$ApiPort/health" -Label "L'API" -Service 'api'
+Write-Step "API pronta su http://localhost:$ApiPort"
 
 # --- 6. Tunnel per l'API -----------------------------------------------------
 
-Write-Step 'Apro il tunnel Cloudflare per l''API (porta 8080)'
-$script:ApiTunnelProcess = Start-CloudflaredTunnel -LocalUrl 'http://localhost:8080' -LogPath $ApiTunnelLog
+Write-Step "Apro il tunnel Cloudflare per l'API (porta $ApiPort)"
+$script:ApiTunnelProcess = Start-CloudflaredTunnel -LocalUrl "http://localhost:$ApiPort" -LogPath $ApiTunnelLog
 
 $ApiUrl = Get-TunnelUrl -LogPath $ApiTunnelLog
 if (-not $ApiUrl) { Fail "non sono riuscito a leggere l'URL del tunnel API entro 60s — controlla $ApiTunnelLog" }
@@ -238,14 +272,15 @@ Set-EnvFileVar -Path $EnvFile -Key 'VITALFACE_API_BASE_URL' -Value "$ApiUrl/"
 Write-Step "Avvio il kiosk Blazor con l'URL dell'API pubblico"
 docker compose up -d --build web
 if ($LASTEXITCODE -ne 0) { Fail 'docker compose up (web) fallito.' }
+Test-PortPublished -Service 'web' -ContainerPort 8080 -HostPort $WebPort
 
-Wait-ForHttp -Url 'http://localhost:8081/' -Label 'Il kiosk' -Service 'web'
-Write-Step 'Kiosk pronto su http://localhost:8081'
+Wait-ForHttp -Url "http://localhost:$WebPort/" -Label 'Il kiosk' -Service 'web'
+Write-Step "Kiosk pronto su http://localhost:$WebPort"
 
 # --- 8. Tunnel per il kiosk --------------------------------------------------
 
-Write-Step 'Apro il tunnel Cloudflare per il kiosk (porta 8081)'
-$script:WebTunnelProcess = Start-CloudflaredTunnel -LocalUrl 'http://localhost:8081' -LogPath $WebTunnelLog
+Write-Step "Apro il tunnel Cloudflare per il kiosk (porta $WebPort)"
+$script:WebTunnelProcess = Start-CloudflaredTunnel -LocalUrl "http://localhost:$WebPort" -LogPath $WebTunnelLog
 
 $WebUrl = Get-TunnelUrl -LogPath $WebTunnelLog
 if (-not $WebUrl) { Fail "non sono riuscito a leggere l'URL del tunnel kiosk entro 60s — controlla $WebTunnelLog" }
@@ -259,7 +294,7 @@ Write-Step 'Riavvio l''API con il CORS aggiornato'
 docker compose up -d --force-recreate api
 if ($LASTEXITCODE -ne 0) { Fail 'docker compose up --force-recreate api fallito.' }
 
-Wait-ForHttp -Url 'http://localhost:8080/health' -Label "L'API (dopo il riavvio)" -Service 'api'
+Wait-ForHttp -Url "http://localhost:$ApiPort/health" -Label "L'API (dopo il riavvio)" -Service 'api'
 
 # --- Riepilogo ---------------------------------------------------------------
 
@@ -277,7 +312,7 @@ Write-Host ""
 Write-Host " - I container Docker restano in esecuzione in background anche se fermi questo script."
 Write-Host "   Per fermarli: Set-Location '$((Get-Location).Path)'; docker compose down"
 Write-Host ' - Premi Ctrl+C qui per chiudere SOLO i due tunnel pubblici (l''app resta raggiungibile'
-Write-Host '   in locale su http://localhost:8081 e http://localhost:8080).'
+Write-Host "   in locale su http://localhost:$WebPort e http://localhost:$ApiPort)."
 Write-Host '================================================================================' -ForegroundColor Green
 Write-Host ""
 

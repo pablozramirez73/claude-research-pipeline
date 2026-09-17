@@ -21,12 +21,16 @@
 #   REPO_URL     (default: https://github.com/pablozramirez73/claude-research-pipeline.git)
 #   BRANCH       (default: claude/vitalface-station-app-s60ij3 — switch to main once merged)
 #   TARGET_DIR   (default: ./claude-research-pipeline)
+#   API_PORT     (default: 8080 — host port; change if already in use, e.g. by another app/VPN)
+#   WEB_PORT     (default: 8081 — host port; same caveat)
 
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/pablozramirez73/claude-research-pipeline.git}"
 BRANCH="${BRANCH:-claude/vitalface-station-app-s60ij3}"
 TARGET_DIR="${TARGET_DIR:-./claude-research-pipeline}"
+API_PORT="${API_PORT:-8080}"
+WEB_PORT="${WEB_PORT:-8081}"
 
 CLOUDFLARED_BIN="${CLOUDFLARED_BIN:-cloudflared}"
 API_TUNNEL_LOG="/tmp/vitalface-tunnel-api.log"
@@ -53,6 +57,19 @@ command -v git >/dev/null 2>&1 || die "git non è installato."
 command -v docker >/dev/null 2>&1 || die "docker non è installato — vedi https://docs.docker.com/engine/install/"
 docker compose version >/dev/null 2>&1 || die "il plugin 'docker compose' non è disponibile (serve Docker 20.10+)."
 docker info >/dev/null 2>&1 || die "il daemon Docker non risponde — avvialo (es. 'sudo systemctl start docker') e riprova."
+
+# After bringing a service up, confirms Docker actually published its host port — not just that
+# the container is running. A host port already held by something outside Docker/Compose (another
+# app, a leftover process, sometimes a Windows/Hyper-V reserved range) can make `docker compose up`
+# succeed while silently failing to publish, which otherwise looks identical to "the app is slow to
+# start" — you get a real-looking (but wrong) HTTP response instead of a clear connection error.
+verify_port_published() {
+    service="$1"; container_port="$2"; host_port="$3"
+    published="$(docker compose port "$service" "$container_port" 2>/dev/null || true)"
+    if [ -z "$published" ]; then
+        die "Docker non ha pubblicato la porta $container_port di '$service' sulla porta host $host_port. Causa probabile: un altro processo (non Docker) sta già usando la porta $host_port sul tuo computer. Verifica con 'netstat -ano | findstr :$host_port' (Windows) o 'lsof -i :$host_port' (macOS/Linux), poi rilancia con $(echo "$service" | tr '[:lower:]' '[:upper:]')_PORT=<altra porta> (es. 18080) ./run-with-cloudflare-tunnel.sh."
+    fi
+}
 
 # --- 2. Clona o aggiorna il branch da GitHub -------------------------------
 
@@ -86,6 +103,9 @@ if ! grep -q '^VITALFACE_DB_PASSWORD=' "$ENV_FILE" 2>/dev/null; then
     log "Genero una password per PostgreSQL in .env"
     set_env_var VITALFACE_DB_PASSWORD "$(openssl rand -hex 16 2>/dev/null || head -c32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c32)"
 fi
+
+set_env_var VITALFACE_API_PORT "$API_PORT"
+set_env_var VITALFACE_WEB_PORT "$WEB_PORT"
 
 # --- 4. Installa cloudflared se manca ---------------------------------------
 
@@ -131,6 +151,7 @@ docker compose build
 
 log "Avvio PostgreSQL e l'API"
 docker compose up -d postgres api
+verify_port_published "api" "8080" "$API_PORT"
 
 wait_for_http() {
     url="$1"; label="$2"; service="$3"; total_attempts=60; attempts="$total_attempts"
@@ -149,8 +170,8 @@ wait_for_http() {
     die "$label non ha risposto in tempo su $url dopo 120s — vedi i log sopra (o 'docker compose logs $service')."
 }
 
-wait_for_http "http://localhost:8080/health" "L'API" "api"
-log "API pronta su http://localhost:8080"
+wait_for_http "http://localhost:$API_PORT/health" "L'API" "api"
+log "API pronta su http://localhost:$API_PORT"
 
 # --- 6. Tunnel per l'API -----------------------------------------------------
 
@@ -173,8 +194,8 @@ extract_tunnel_url() {
     return 1
 }
 
-log "Apro il tunnel Cloudflare per l'API (porta 8080) — output live qui sotto:"
-"$CLOUDFLARED_BIN" tunnel --url http://localhost:8080 > "$API_TUNNEL_LOG" 2>&1 &
+log "Apro il tunnel Cloudflare per l'API (porta $API_PORT) — output live qui sotto:"
+"$CLOUDFLARED_BIN" tunnel --url "http://localhost:$API_PORT" > "$API_TUNNEL_LOG" 2>&1 &
 API_TUNNEL_PID=$!
 tail -n +1 -f "$API_TUNNEL_LOG" 2>/dev/null &
 API_TAIL_PID=$!
@@ -188,13 +209,14 @@ set_env_var VITALFACE_API_BASE_URL "${API_URL}/"
 
 log "Avvio il kiosk Blazor con l'URL dell'API pubblico"
 docker compose up -d --build web
-wait_for_http "http://localhost:8081/" "Il kiosk" "web"
-log "Kiosk pronto su http://localhost:8081"
+verify_port_published "web" "8080" "$WEB_PORT"
+wait_for_http "http://localhost:$WEB_PORT/" "Il kiosk" "web"
+log "Kiosk pronto su http://localhost:$WEB_PORT"
 
 # --- 8. Tunnel per il kiosk --------------------------------------------------
 
-log "Apro il tunnel Cloudflare per il kiosk (porta 8081) — output live qui sotto:"
-"$CLOUDFLARED_BIN" tunnel --url http://localhost:8081 > "$WEB_TUNNEL_LOG" 2>&1 &
+log "Apro il tunnel Cloudflare per il kiosk (porta $WEB_PORT) — output live qui sotto:"
+"$CLOUDFLARED_BIN" tunnel --url "http://localhost:$WEB_PORT" > "$WEB_TUNNEL_LOG" 2>&1 &
 WEB_TUNNEL_PID=$!
 tail -n +1 -f "$WEB_TUNNEL_LOG" 2>/dev/null &
 WEB_TAIL_PID=$!
@@ -208,7 +230,7 @@ set_env_var VITALFACE_WEB_ORIGIN "$WEB_URL"
 
 log "Riavvio l'API con il CORS aggiornato"
 docker compose up -d --force-recreate api
-wait_for_http "http://localhost:8080/health" "L'API (dopo il riavvio)" "api"
+wait_for_http "http://localhost:$API_PORT/health" "L'API (dopo il riavvio)" "api"
 
 # --- Riepilogo ---------------------------------------------------------------
 
@@ -227,7 +249,7 @@ cat <<EOF
  - I container Docker restano in esecuzione in background anche se fermi questo script.
    Per fermarli: (cd "$TARGET_DIR/VitalFace" && docker compose down)
  - Premi Ctrl+C qui per chiudere SOLO i due tunnel pubblici (l'app resta raggiungibile
-   in locale su http://localhost:8081 e http://localhost:8080).
+   in locale su http://localhost:$WEB_PORT e http://localhost:$API_PORT).
 ================================================================================
 
 EOF
