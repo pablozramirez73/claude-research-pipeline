@@ -133,18 +133,23 @@ log "Avvio PostgreSQL e l'API"
 docker compose up -d postgres api
 
 wait_for_http() {
-    url="$1"; label="$2"; attempts=60
+    url="$1"; label="$2"; service="$3"; total_attempts=60; attempts="$total_attempts"
     while [ "$attempts" -gt 0 ]; do
         if curl -fsS -o /dev/null "$url" 2>/dev/null; then
             return 0
         fi
+        if [ $(( (total_attempts - attempts) % 5 )) -eq 0 ] && [ "$attempts" -ne "$total_attempts" ]; then
+            printf '    ... ancora in attesa: %s (%s)\n' "$label" "$url" >&2
+        fi
         attempts=$((attempts - 1))
         sleep 2
     done
-    die "$label non ha risposto in tempo su $url — controlla 'docker compose logs'."
+    printf '\n--- ultime righe di "docker compose logs %s" ---\n' "$service" >&2
+    docker compose logs --tail 30 "$service" >&2 2>/dev/null || true
+    die "$label non ha risposto in tempo su $url dopo 120s — vedi i log sopra (o 'docker compose logs $service')."
 }
 
-wait_for_http "http://localhost:8080/health" "L'API"
+wait_for_http "http://localhost:8080/health" "L'API" "api"
 log "API pronta su http://localhost:8080"
 
 # --- 6. Tunnel per l'API -----------------------------------------------------
@@ -183,7 +188,7 @@ set_env_var VITALFACE_API_BASE_URL "${API_URL}/"
 
 log "Avvio il kiosk Blazor con l'URL dell'API pubblico"
 docker compose up -d --build web
-wait_for_http "http://localhost:8081/" "Il kiosk"
+wait_for_http "http://localhost:8081/" "Il kiosk" "web"
 log "Kiosk pronto su http://localhost:8081"
 
 # --- 8. Tunnel per il kiosk --------------------------------------------------
@@ -203,7 +208,7 @@ set_env_var VITALFACE_WEB_ORIGIN "$WEB_URL"
 
 log "Riavvio l'API con il CORS aggiornato"
 docker compose up -d --force-recreate api
-wait_for_http "http://localhost:8080/health" "L'API (dopo il riavvio)"
+wait_for_http "http://localhost:8080/health" "L'API (dopo il riavvio)" "api"
 
 # --- Riepilogo ---------------------------------------------------------------
 

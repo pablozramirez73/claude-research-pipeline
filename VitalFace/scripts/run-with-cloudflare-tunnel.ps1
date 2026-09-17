@@ -80,16 +80,22 @@ function Set-EnvFileVar {
 }
 
 function Wait-ForHttp {
-    param([string]$Url, [string]$Label, [int]$Attempts = 60)
+    param([string]$Url, [string]$Label, [string]$Service, [int]$Attempts = 60)
     for ($i = 0; $i -lt $Attempts; $i++) {
         try {
             $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 3
             if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) { return }
         }
         catch { }
+        if ($i -gt 0 -and $i % 5 -eq 0) {
+            Write-Host "    ... ancora in attesa: $Label ($Url)"
+        }
         Start-Sleep -Seconds 2
     }
-    Fail "$Label non ha risposto in tempo su $Url — controlla 'docker compose logs'."
+    Write-Host ""
+    Write-Host "--- ultime righe di 'docker compose logs $Service' ---"
+    docker compose logs --tail 30 $Service
+    Fail "$Label non ha risposto in tempo su $Url dopo 120s — vedi i log sopra (o 'docker compose logs $Service')."
 }
 
 function Get-TunnelUrl {
@@ -213,7 +219,7 @@ Write-Step 'Avvio PostgreSQL e l''API'
 docker compose up -d postgres api
 if ($LASTEXITCODE -ne 0) { Fail 'docker compose up (postgres, api) fallito.' }
 
-Wait-ForHttp -Url 'http://localhost:8080/health' -Label "L'API"
+Wait-ForHttp -Url 'http://localhost:8080/health' -Label "L'API" -Service 'api'
 Write-Step 'API pronta su http://localhost:8080'
 
 # --- 6. Tunnel per l'API -----------------------------------------------------
@@ -233,7 +239,7 @@ Write-Step "Avvio il kiosk Blazor con l'URL dell'API pubblico"
 docker compose up -d --build web
 if ($LASTEXITCODE -ne 0) { Fail 'docker compose up (web) fallito.' }
 
-Wait-ForHttp -Url 'http://localhost:8081/' -Label 'Il kiosk'
+Wait-ForHttp -Url 'http://localhost:8081/' -Label 'Il kiosk' -Service 'web'
 Write-Step 'Kiosk pronto su http://localhost:8081'
 
 # --- 8. Tunnel per il kiosk --------------------------------------------------
@@ -253,7 +259,7 @@ Write-Step 'Riavvio l''API con il CORS aggiornato'
 docker compose up -d --force-recreate api
 if ($LASTEXITCODE -ne 0) { Fail 'docker compose up --force-recreate api fallito.' }
 
-Wait-ForHttp -Url 'http://localhost:8080/health' -Label "L'API (dopo il riavvio)"
+Wait-ForHttp -Url 'http://localhost:8080/health' -Label "L'API (dopo il riavvio)" -Service 'api'
 
 # --- Riepilogo ---------------------------------------------------------------
 
