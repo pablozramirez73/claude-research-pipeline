@@ -87,6 +87,16 @@ irm https://raw.githubusercontent.com/pablozramirez73/claude-research-pipeline/c
 Richiede Docker Desktop e PowerShell 7+ (`winget install Microsoft.PowerShell`); installa
 `cloudflared` da solo via `winget` o, in mancanza, scaricando il binario ufficiale.
 
+**Dove clona il codice**: sempre in una posizione fissa e assoluta sotto la home dell'utente
+(`~/VitalFaceStation/claude-research-pipeline`), mai in un percorso relativo a dove lanci lo
+script. Questo è deliberato: eseguire lo script da directory diverse (o peggio, da dentro la
+cartella `scripts/` di un clone già esistente) con un percorso relativo può far clonare il
+repository dentro sé stesso, annidandosi fino a superare il limite di lunghezza dei percorsi di
+Windows — e comunque farebbe convivere più cloni fisici che condividono lo stesso nome di progetto
+Docker Compose (derivato dal nome della cartella `VitalFace`), quindi lo stesso volume Postgres,
+con `.env`/password diverse tra loro. Lo script rifiuta di procedere se rileva un percorso già
+annidato — in quel caso cancella la cartella annidata e rilancia.
+
 Perché due tunnel e non uno: un Cloudflare Quick Tunnel espone un solo servizio locale per
 hostname pubblico, quindi API e kiosk finiscono su due hostname `*.trycloudflare.com` diversi.
 Lo script gestisce la dipendenza incrociata: avvia prima l'API, apre il suo tunnel, poi

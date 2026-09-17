@@ -25,7 +25,14 @@
     Branch to check out. Defaults to the feature branch — switch to 'main' once merged.
 
 .PARAMETER TargetDir
-    Local directory to clone into (or reuse if it already exists). Defaults to .\claude-research-pipeline.
+    Local directory to clone into (or reuse if it already exists). Defaults to a fixed location
+    under your user profile (~/VitalFaceStation/claude-research-pipeline) rather than a path
+    relative to wherever you happen to run this from — re-running the script from a different
+    working directory (or from inside a previous clone's own scripts/ folder) must always land on
+    the exact same checkout, or you end up with multiple physical clones that all resolve to the
+    same Docker Compose project name (derived from the "VitalFace" folder name) and therefore
+    silently share the same Postgres volume across mismatched .env passwords — and, worse, a
+    relative default can make a clone recurse into itself if run from inside an existing checkout.
 
 .PARAMETER ApiPort
     Host port for the API. Defaults to 8080. Change this if 8080 is already used by something else
@@ -48,12 +55,20 @@
 param(
     [string]$RepoUrl = 'https://github.com/pablozramirez73/claude-research-pipeline.git',
     [string]$Branch = 'claude/vitalface-station-app-s60ij3',
-    [string]$TargetDir = '.\claude-research-pipeline',
+    [string]$TargetDir = (Join-Path $HOME 'VitalFaceStation/claude-research-pipeline'),
     [int]$ApiPort = 8080,
     [int]$WebPort = 8081
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Resolve to an absolute path up front regardless of the current working directory, and regardless
+# of whether -TargetDir was left at its default or passed explicitly (possibly as a relative path)
+# — this is what actually prevents the clone-into-itself/shared-volume mess described above.
+$TargetDir = [System.IO.Path]::GetFullPath($TargetDir)
+if ($TargetDir -like "*claude-research-pipeline*claude-research-pipeline*") {
+    Fail "Il percorso di destinazione risolto ('$TargetDir') contiene piu' volte 'claude-research-pipeline' annidato — segno che una precedente esecuzione e' stata lanciata da dentro un clone gia' esistente. Cancella quella cartella annidata ed esegui questo script di nuovo (userà '$([System.IO.Path]::GetFullPath((Join-Path $HOME 'VitalFaceStation/claude-research-pipeline')))' come percorso pulito e stabile)."
+}
 
 $script:CloudflaredPath = $null
 $script:ApiTunnelProcess = $null
@@ -225,6 +240,10 @@ if (Test-Path (Join-Path $TargetDir '.git')) {
     if ($LASTEXITCODE -ne 0) { Fail 'git pull fallito.' }
 }
 else {
+    $parentDir = Split-Path $TargetDir -Parent
+    if ($parentDir -and -not (Test-Path $parentDir)) {
+        New-Item -ItemType Directory -Force -Path $parentDir | Out-Null
+    }
     git clone --branch $Branch --single-branch $RepoUrl $TargetDir
     if ($LASTEXITCODE -ne 0) { Fail 'git clone fallito.' }
 }

@@ -20,7 +20,8 @@
 # Optional environment overrides:
 #   REPO_URL     (default: https://github.com/pablozramirez73/claude-research-pipeline.git)
 #   BRANCH       (default: claude/vitalface-station-app-s60ij3 — switch to main once merged)
-#   TARGET_DIR   (default: ./claude-research-pipeline)
+#   TARGET_DIR   (default: $HOME/VitalFaceStation/claude-research-pipeline — a fixed, absolute
+#                 location, not one relative to wherever you happen to run this from; see below)
 #   API_PORT     (default: 8080 — host port; change if already in use, e.g. by another app/VPN)
 #   WEB_PORT     (default: 8081 — host port; same caveat)
 
@@ -28,7 +29,13 @@ set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/pablozramirez73/claude-research-pipeline.git}"
 BRANCH="${BRANCH:-claude/vitalface-station-app-s60ij3}"
-TARGET_DIR="${TARGET_DIR:-./claude-research-pipeline}"
+# A fixed, absolute default (not a "./..." path) on purpose: re-running this script from a
+# different working directory (or from inside a previous clone's own scripts/ folder) must always
+# land on the exact same checkout. Otherwise you end up with multiple physical clones that all
+# resolve to the same Docker Compose project name (derived from the "VitalFace" folder name) and
+# therefore silently share the same Postgres volume across mismatched .env passwords — and, worse,
+# a relative default can make a clone recurse into itself if run from inside an existing checkout.
+TARGET_DIR="${TARGET_DIR:-$HOME/VitalFaceStation/claude-research-pipeline}"
 API_PORT="${API_PORT:-8080}"
 WEB_PORT="${WEB_PORT:-8081}"
 
@@ -42,6 +49,12 @@ WEB_TAIL_PID=""
 
 log() { printf '\n\033[1;34m==> %s\033[0m\n' "$1"; }
 die() { printf '\n\033[1;31mErrore: %s\033[0m\n' "$1" >&2; exit 1; }
+
+case "$TARGET_DIR" in
+    *claude-research-pipeline*claude-research-pipeline*)
+        die "Il percorso di destinazione ('$TARGET_DIR') contiene più volte 'claude-research-pipeline' annidato — segno che una precedente esecuzione è stata lanciata da dentro un clone già esistente. Cancella quella cartella annidata, poi rilancia (userà '$HOME/VitalFaceStation/claude-research-pipeline' come percorso pulito e stabile)."
+        ;;
+esac
 
 cleanup() {
     if [ -n "$API_TUNNEL_PID" ]; then kill "$API_TUNNEL_PID" 2>/dev/null || true; fi
@@ -79,6 +92,7 @@ if [ -d "$TARGET_DIR/.git" ]; then
     git -C "$TARGET_DIR" checkout "$BRANCH"
     git -C "$TARGET_DIR" pull --ff-only origin "$BRANCH"
 else
+    mkdir -p "$(dirname "$TARGET_DIR")"
     git clone --branch "$BRANCH" --single-branch "$REPO_URL" "$TARGET_DIR"
 fi
 
