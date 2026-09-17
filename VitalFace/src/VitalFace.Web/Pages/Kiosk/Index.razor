@@ -1,0 +1,306 @@
+@page "/"
+@using VitalFace.Contracts
+@using VitalFace.Core.Abstractions
+@using VitalFace.Web.Services
+@inject KioskInterop Kiosk
+@inject VitalsApiClient Api
+@inject IRppgProcessor RppgProcessor
+@inject IFatigueDetector FatigueDetector
+@inject IConfiguration Configuration
+@implements IAsyncDisposable
+
+<div class="kiosk-root" @onpointerdown="NotifyInteraction" @ontouchstart="NotifyInteraction">
+
+    <div id="video-container" class="video-container @(IsCameraStageVisible ? "" : "is-hidden")"></div>
+    <div id="viz-container" class="viz-container @(IsCameraStageVisible ? "" : "is-hidden")"></div>
+
+    @switch (_stage)
+    {
+        case KioskStage.Idle:
+            <section class="stage stage-idle">
+                <h1>VitalFace Station</h1>
+                <p>Pre-triage contactless in 30 secondi. Nessun contatto, nessun video registrato.</p>
+                <button class="btn-primary" @onclick="BeginConsentAsync">Inizia screening</button>
+            </section>
+            break;
+
+        case KioskStage.Consent:
+            <section class="stage stage-consent">
+                <h2>Consenso al trattamento dei dati</h2>
+                <p>
+                    VitalFace Station non registra video ne' immagini: elabora in tempo reale solo
+                    valori medi di colore e la posizione di alcuni punti del viso, senza conservarli.
+                    E' un dispositivo di pre-triage (Classe I) e non sostituisce una diagnosi medica.
+                </p>
+                <div id="signature-pad-container" class="signature-pad"></div>
+                @if (_consentError is not null)
+                {
+                    <p class="field-error">@_consentError</p>
+                }
+                <div class="consent-actions">
+                    <button class="btn-secondary" @onclick="ClearSignatureAsync">Cancella firma</button>
+                    <button class="btn-primary" @onclick="BeginCountdownAsync">Confermo e continuo</button>
+                </div>
+            </section>
+            break;
+
+        case KioskStage.Countdown:
+            <section class="stage stage-countdown">
+                <p class="countdown-number">@_countdownValue</p>
+                <p>Resta fermo e guarda la fotocamera...</p>
+            </section>
+            break;
+
+        case KioskStage.Capturing:
+            <section class="stage stage-capturing">
+                <progress class="capture-progress" max="@_captureDurationSeconds" value="@_captureElapsedSeconds"></progress>
+                <p>Rilevamento in corso... @(_captureDurationSeconds - _captureElapsedSeconds)s</p>
+            </section>
+            break;
+
+        case KioskStage.Analyzing:
+            <section class="stage stage-analyzing">
+                <p class="spinner">Analisi in corso...</p>
+            </section>
+            break;
+
+        case KioskStage.Result:
+            <section class="stage stage-result @(_result!.IsCritical ? "stage-critical" : "stage-normal")">
+                <h2>@(_result.IsCritical ? "Attenzione: valori fuori range" : "Screening completato")</h2>
+
+                <div class="result-grid">
+                    <div class="result-tile">
+                        <span class="result-label">Frequenza cardiaca</span>
+                        <span class="result-value">@(_result.HeartRateBpm is { } hr ? $"{hr:F0} bpm" : "n/d")</span>
+                    </div>
+                    <div class="result-tile">
+                        <span class="result-label">Frequenza respiratoria</span>
+                        <span class="result-value">@(_result.RespiratoryRateBpm is { } rr ? $"{rr:F0} atti/min" : "n/d")</span>
+                    </div>
+                    <div class="result-tile">
+                        <span class="result-label">Affaticamento (PERCLOS)</span>
+                        <span class="result-value">@_result.FatigueScore.ToString("F0")/100</span>
+                    </div>
+                </div>
+
+                @if (_result.IsCritical)
+                {
+                    <ul class="critical-reasons">
+                        @foreach (var reason in _result.CriticalReasons)
+                        {
+                            <li>@reason</li>
+                        }
+                    </ul>
+                    <p class="disclaimer disclaimer-strong">Consultare un medico o il farmacista.</p>
+                }
+
+                <p class="disclaimer">Pre-triage non invasivo — non sostituisce una diagnosi medica.</p>
+
+                <div class="result-actions">
+                    <a class="btn-secondary" href="@_ticketUri" target="_blank" rel="noopener">Stampa scontrino</a>
+                    <button class="btn-primary" @onclick="ResetToIdle">Nuovo screening</button>
+                </div>
+            </section>
+            break;
+
+        case KioskStage.Error:
+            <section class="stage stage-error">
+                <p>Si e' verificato un problema durante l'analisi. Riprova.</p>
+                <button class="btn-primary" @onclick="ResetToIdle">Torna alla schermata iniziale</button>
+            </section>
+            break;
+    }
+</div>
+
+@code {
+    private enum KioskStage { Idle, Consent, Countdown, Capturing, Analyzing, Result, Error }
+
+    private KioskStage _stage = KioskStage.Idle;
+    private string? _consentError;
+    private int _countdownValue = 3;
+    private int _captureDurationSeconds;
+    private int _idleTimeoutSeconds;
+    private int _captureElapsedSeconds;
+    private VitalAnalysisResponse? _result;
+    private Uri? _ticketUri;
+    private byte[] _consentBytes = [];
+    private DateTime _lastInteractionUtc = DateTime.UtcNow;
+    private PeriodicTimer? _idleWatchdog;
+    private CancellationTokenSource? _captureCts;
+
+    private bool IsCameraStageVisible => _stage is KioskStage.Countdown or KioskStage.Capturing;
+
+    protected override void OnInitialized()
+    {
+        _captureDurationSeconds = GetConfigInt("CaptureDurationSeconds", 30);
+        _idleTimeoutSeconds = GetConfigInt("IdleTimeoutSeconds", 60);
+        _idleWatchdog = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        _ = WatchIdleAsync();
+    }
+
+    private int GetConfigInt(string key, int fallback) =>
+        int.TryParse(Configuration[key], out var value) ? value : fallback;
+
+    private void NotifyInteraction() => _lastInteractionUtc = DateTime.UtcNow;
+
+    private async Task WatchIdleAsync()
+    {
+        try
+        {
+            while (_idleWatchdog is not null && await _idleWatchdog.WaitForNextTickAsync())
+            {
+                if (_stage != KioskStage.Idle && DateTime.UtcNow - _lastInteractionUtc > TimeSpan.FromSeconds(_idleTimeoutSeconds))
+                {
+                    await ResetToIdleAsync();
+                }
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            // Component disposed while awaiting the next tick — nothing further to do.
+        }
+    }
+
+    private async Task BeginConsentAsync()
+    {
+        NotifyInteraction();
+        _consentError = null;
+        _stage = KioskStage.Consent;
+        StateHasChanged();
+        await Task.Yield(); // let Blazor render the container div before p5 attaches to it
+        await Kiosk.InitializeConsentAsync("signature-pad-container");
+    }
+
+    private async Task ClearSignatureAsync()
+    {
+        NotifyInteraction();
+        await Kiosk.ClearSignatureAsync();
+        _consentError = null;
+    }
+
+    private async Task BeginCountdownAsync()
+    {
+        NotifyInteraction();
+
+        if (!await Kiosk.HasConsentSignatureAsync())
+        {
+            _consentError = "Firma richiesta per proseguire.";
+            StateHasChanged();
+            return;
+        }
+
+        _consentError = null;
+        _consentBytes = await Kiosk.GetConsentSignatureBytesAsync();
+
+        _stage = KioskStage.Countdown;
+        StateHasChanged();
+        await Task.Yield();
+
+        await Kiosk.InitializeCaptureStageAsync("video-container", "viz-container");
+        await Kiosk.RequestFullscreenAsync();
+
+        for (_countdownValue = 3; _countdownValue > 0; _countdownValue--)
+        {
+            StateHasChanged();
+            await Task.Delay(1000);
+        }
+
+        await BeginCaptureAsync();
+    }
+
+    private async Task BeginCaptureAsync()
+    {
+        _stage = KioskStage.Capturing;
+        _captureElapsedSeconds = 0;
+        StateHasChanged();
+
+        await Kiosk.StartCaptureAsync();
+
+        _captureCts = new CancellationTokenSource();
+        var token = _captureCts.Token;
+
+        try
+        {
+            while (_captureElapsedSeconds < _captureDurationSeconds)
+            {
+                await Task.Delay(1000, token);
+                _captureElapsedSeconds++;
+                await UpdateLivePreviewAsync();
+                StateHasChanged();
+            }
+
+            await FinishCaptureAsync();
+        }
+        catch (OperationCanceledException)
+        {
+            // Session reset mid-capture (idle timeout / operator abort) — nothing further to do.
+        }
+    }
+
+    private async Task UpdateLivePreviewAsync()
+    {
+        var buffers = await Kiosk.PeekBuffersAsync();
+        if (buffers is null || buffers.R.Length < buffers.Fps * 8)
+            return; // need a minimal window before CHROM produces a meaningful estimate
+
+        var heartRate = RppgProcessor.EstimateHeartRate(buffers.R, buffers.G, buffers.B, buffers.Fps);
+        var fatigue = FatigueDetector.CalculatePerclos(buffers.EyeOpenness, buffers.EyeOpenness.Length / buffers.Fps);
+        var respPhase = _captureElapsedSeconds * 0.6; // decorative wave phase, not a measurement
+
+        await Kiosk.UpdateLiveMetricsAsync(heartRate.Bpm, respPhase, fatigue.Score, heartRate.Confidence);
+    }
+
+    private async Task FinishCaptureAsync()
+    {
+        _stage = KioskStage.Analyzing;
+        StateHasChanged();
+
+        var buffers = await Kiosk.StopCaptureAsync();
+
+        var request = new VitalAnalysisRequest(
+            LocationId: Configuration["LocationId"] ?? "Postazione non configurata",
+            R: buffers.R,
+            G: buffers.G,
+            B: buffers.B,
+            EyeOpenness: buffers.EyeOpenness,
+            ShoulderY: buffers.ShoulderY,
+            Fps: buffers.Fps,
+            ConsentSignaturePng: _consentBytes);
+
+        try
+        {
+            _result = await Api.AnalyzeAsync(request);
+            _ticketUri = Api.GetTicketUri(_result.ScreeningId);
+            _stage = KioskStage.Result;
+        }
+        catch (Exception)
+        {
+            _stage = KioskStage.Error;
+        }
+
+        StateHasChanged();
+    }
+
+    private void ResetToIdle() => _ = ResetToIdleAsync();
+
+    private async Task ResetToIdleAsync()
+    {
+        _captureCts?.Cancel();
+        await Kiosk.TeardownAsync();
+
+        _stage = KioskStage.Idle;
+        _consentError = null;
+        _consentBytes = [];
+        _result = null;
+        _ticketUri = null;
+        NotifyInteraction();
+        StateHasChanged();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _idleWatchdog?.Dispose();
+        _captureCts?.Cancel();
+        await Kiosk.DisposeAsync();
+    }
+}

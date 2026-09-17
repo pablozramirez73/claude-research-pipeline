@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/VitalFace.Api/VitalFace.Api.csproj" />
+    <Project Path="src/VitalFace.Contracts/VitalFace.Contracts.csproj" />
+    <Project Path="src/VitalFace.Core/VitalFace.Core.csproj" />
+    <Project Path="src/VitalFace.Infrastructure/VitalFace.Infrastructure.csproj" />
+    <Project Path="src/VitalFace.Web/VitalFace.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/VitalFace.Core.Tests/VitalFace.Core.Tests.csproj" />
+  </Folder>
+</Solution>
