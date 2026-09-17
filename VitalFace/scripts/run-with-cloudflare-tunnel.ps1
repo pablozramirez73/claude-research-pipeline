@@ -68,19 +68,11 @@ $ErrorActionPreference = 'Stop'
 # $LASTEXITCODE itself, so restore that classic behavior explicitly.
 $PSNativeCommandUseErrorActionPreference = $false
 
-# Resolve to an absolute path up front regardless of the current working directory, and regardless
-# of whether -TargetDir was left at its default or passed explicitly (possibly as a relative path)
-# — this is what actually prevents the clone-into-itself/shared-volume mess described above.
-$TargetDir = [System.IO.Path]::GetFullPath($TargetDir)
-if ($TargetDir -like "*claude-research-pipeline*claude-research-pipeline*") {
-    Fail "Il percorso di destinazione risolto ('$TargetDir') contiene piu' volte 'claude-research-pipeline' annidato — segno che una precedente esecuzione e' stata lanciata da dentro un clone gia' esistente. Cancella quella cartella annidata ed esegui questo script di nuovo (userà '$([System.IO.Path]::GetFullPath((Join-Path $HOME 'VitalFaceStation/claude-research-pipeline')))' come percorso pulito e stabile)."
-}
-
-$script:CloudflaredPath = $null
-$script:ApiTunnelProcess = $null
-$script:WebTunnelProcess = $null
-$ApiTunnelLog = Join-Path ([System.IO.Path]::GetTempPath()) 'vitalface-tunnel-api.log'
-$WebTunnelLog = Join-Path ([System.IO.Path]::GetTempPath()) 'vitalface-tunnel-web.log'
+# All function definitions live here, before the first place any of them is called (the nesting
+# guard just below calls Fail): PowerShell does NOT hoist top-level function statements the way it
+# does in some other languages — calling one before its textual definition raises "the term '...'
+# is not recognized" instead of running it, silently defeating the very error message it was
+# supposed to produce.
 
 function Write-Step {
     param([string]$Message)
@@ -92,6 +84,7 @@ function Fail {
     param([string]$Message)
     Write-Host ""
     Write-Host "Errore: $Message" -ForegroundColor Red
+    try { Stop-Transcript | Out-Null } catch { }
     exit 1
 }
 
@@ -210,6 +203,26 @@ function Start-CloudflaredTunnel {
         -NoNewWindow -PassThru
 }
 
+function Write-UrlsFile {
+    # Writes (overwrites) a small, easy-to-find/share summary of the current tunnel URLs — called
+    # once per URL as soon as it's known, so the file is useful even if the script fails or is
+    # interrupted before both tunnels are up, not just at the very end.
+    param([string]$ApiUrl, [string]$WebUrl)
+    $lines = @(
+        'VitalFace Station — URL pubblici (Cloudflare Quick Tunnel)'
+        "Generato: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')"
+        ''
+        "Kiosk (apri questo sul dispositivo/tablet): $(if ($WebUrl) { $WebUrl } else { '<non ancora disponibile>' })"
+        "API (uso interno, CORS ristretto al kiosk sopra): $(if ($ApiUrl) { $ApiUrl } else { '<non ancora disponibile>' })"
+        ''
+        'Questi URL sono temporanei: cambiano ad ogni riavvio dello script e restano attivi'
+        'finché lo script resta in esecuzione.'
+        ''
+        "Log completo di questa esecuzione: $LogFile"
+    )
+    Set-Content -Path $script:UrlsFile -Value $lines
+}
+
 function Test-PortPublished {
     # After bringing a service up, confirms Docker actually published its host port — not just
     # that the container is running. A host port already held by something outside Docker/Compose
@@ -226,6 +239,29 @@ function Test-PortPublished {
             "-$(($Service).Substring(0,1).ToUpper() + $Service.Substring(1))Port <altra porta> (es. 18080).")
     }
 }
+
+# Resolve to an absolute path up front regardless of the current working directory, and regardless
+# of whether -TargetDir was left at its default or passed explicitly (possibly as a relative path)
+# — this is what actually prevents the clone-into-itself/shared-volume mess described above.
+$TargetDir = [System.IO.Path]::GetFullPath($TargetDir)
+if ($TargetDir -like "*claude-research-pipeline*claude-research-pipeline*") {
+    Fail "Il percorso di destinazione risolto ('$TargetDir') contiene piu' volte 'claude-research-pipeline' annidato — segno che una precedente esecuzione e' stata lanciata da dentro un clone gia' esistente. Cancella quella cartella annidata ed esegui questo script di nuovo (userà '$([System.IO.Path]::GetFullPath((Join-Path $HOME 'VitalFaceStation/claude-research-pipeline')))' come percorso pulito e stabile)."
+}
+
+# Duplicate ALL of this script's console output to a log file, on top of the terminal, so a full
+# run survives copy/paste issues, a closed terminal, or scrollback too short to hold a whole
+# `docker compose build` — this has been the single biggest obstacle in diagnosing failures so far,
+# since it means the exact output can just be attached/pasted from a file instead of re-typed.
+$LogFile = Join-Path (Split-Path $TargetDir -Parent) 'vitalface-run.log'
+New-Item -ItemType Directory -Force -Path (Split-Path $LogFile -Parent) | Out-Null
+try { Start-Transcript -Path $LogFile -Append -IncludeInvocationHeader | Out-Null }
+catch { Write-Host "Attenzione: impossibile avviare il log su file ($($_.Exception.Message))" -ForegroundColor Yellow }
+
+$script:CloudflaredPath = $null
+$script:ApiTunnelProcess = $null
+$script:WebTunnelProcess = $null
+$ApiTunnelLog = Join-Path ([System.IO.Path]::GetTempPath()) 'vitalface-tunnel-api.log'
+$WebTunnelLog = Join-Path ([System.IO.Path]::GetTempPath()) 'vitalface-tunnel-web.log'
 
 try {
 # --- 1. Prerequisiti --------------------------------------------------------
@@ -256,6 +292,7 @@ else {
 }
 
 Set-Location (Join-Path $TargetDir 'VitalFace')
+$script:UrlsFile = Join-Path (Get-Location).Path 'vitalface-tunnel-urls.txt'
 
 # --- 3. Password del database -----------------------------------------------
 
@@ -329,6 +366,8 @@ $script:ApiTunnelProcess = Start-CloudflaredTunnel -LocalUrl "http://localhost:$
 $ApiUrl = Get-TunnelUrl -LogPath $ApiTunnelLog
 if (-not $ApiUrl) { Fail "non sono riuscito a leggere l'URL del tunnel API entro 60s — controlla $ApiTunnelLog" }
 Write-Step "API pubblica: $ApiUrl"
+Write-UrlsFile -ApiUrl $ApiUrl -WebUrl $null
+Write-Step "URL scritto anche su file: $script:UrlsFile"
 
 # --- 7. Ricrea il kiosk con l'URL dell'API iniettato a runtime --------------
 
@@ -350,6 +389,8 @@ $script:WebTunnelProcess = Start-CloudflaredTunnel -LocalUrl "http://localhost:$
 $WebUrl = Get-TunnelUrl -LogPath $WebTunnelLog
 if (-not $WebUrl) { Fail "non sono riuscito a leggere l'URL del tunnel kiosk entro 60s — controlla $WebTunnelLog" }
 Write-Step "Kiosk pubblico: $WebUrl"
+Write-UrlsFile -ApiUrl $ApiUrl -WebUrl $WebUrl
+Write-Step "URL scritti anche su file: $script:UrlsFile"
 
 # --- 9. Aggiorna il CORS dell'API con l'origine pubblica del kiosk ----------
 
@@ -378,6 +419,9 @@ Write-Host " - I container Docker restano in esecuzione in background anche se f
 Write-Host "   Per fermarli: Set-Location '$((Get-Location).Path)'; docker compose down"
 Write-Host ' - Premi Ctrl+C qui per chiudere SOLO i due tunnel pubblici (l''app resta raggiungibile'
 Write-Host "   in locale su http://localhost:$WebPort e http://localhost:$ApiPort)."
+Write-Host ""
+Write-Host " Gli URL qui sopra sono salvati anche su: $script:UrlsFile"
+Write-Host " Il log completo di questa esecuzione è in: $LogFile"
 Write-Host '================================================================================' -ForegroundColor Green
 Write-Host ""
 
@@ -402,4 +446,9 @@ catch {
     Write-Host "Errore PowerShell non gestito: $($_.Exception.GetType().FullName): $($_.Exception.Message)" -ForegroundColor Red
     Write-Host $_.ScriptStackTrace -ForegroundColor Red
     exit 1
+}
+finally {
+    # Always stop the transcript, whether the script succeeded, hit Fail(), or threw — so
+    # $LogFile ends up with a matching "Transcript stopped" footer instead of looking truncated.
+    try { Stop-Transcript | Out-Null } catch { }
 }

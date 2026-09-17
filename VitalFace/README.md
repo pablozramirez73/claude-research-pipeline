@@ -119,6 +119,17 @@ API_PORT=18080 WEB_PORT=18081 ./run-with-cloudflare-tunnel.sh
 .\run-with-cloudflare-tunnel.ps1 -ApiPort 18080 -WebPort 18081
 ```
 
+**Output salvato su file** (non solo a schermo): oltre a stampare tutto in console, lo script
+scrive due file, utili se il terminale si chiude, lo scrollback è troppo corto, o serve
+condividere l'output esatto invece di ricopiarlo a mano:
+
+- `vitalface-tunnel-urls.txt`, dentro la cartella `VitalFace` del clone — un riepilogo breve con
+  gli URL pubblici di API e kiosk (aggiornato non appena ciascun URL è noto, quindi utile anche se
+  lo script si ferma prima che entrambi i tunnel siano su).
+- `vitalface-run.log`, un livello sopra la cartella del clone (es.
+  `~/VitalFaceStation/vitalface-run.log`) — il log completo dell'intera esecuzione, identico a
+  quanto stampato a schermo.
+
 ## Cosa è stato verificato in questa sessione
 
 Ambiente sandbox senza accesso alle CDN Microsoft/jsdelivr (policy di rete dell'agente), quindi la

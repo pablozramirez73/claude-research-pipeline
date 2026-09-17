@@ -56,6 +56,15 @@ case "$TARGET_DIR" in
         ;;
 esac
 
+# Duplicate ALL of this script's output (stdout+stderr) to a log file, on top of the terminal, so a
+# full run survives copy/paste issues, a closed terminal, or scrollback too short to hold a whole
+# `docker compose build` — this has been the single biggest obstacle in diagnosing failures so far,
+# since it means the exact output can just be attached/pasted from a file instead of re-typed.
+LOG_FILE="${LOG_FILE:-$(dirname "$TARGET_DIR")/vitalface-run.log}"
+mkdir -p "$(dirname "$LOG_FILE")"
+exec > >(tee -a "$LOG_FILE") 2>&1
+log "Log completo di questa esecuzione: $LOG_FILE"
+
 cleanup() {
     if [ -n "$API_TUNNEL_PID" ]; then kill "$API_TUNNEL_PID" 2>/dev/null || true; fi
     if [ -n "$WEB_TUNNEL_PID" ]; then kill "$WEB_TUNNEL_PID" 2>/dev/null || true; fi
@@ -97,6 +106,7 @@ else
 fi
 
 cd "$TARGET_DIR/VitalFace"
+URLS_FILE="$(pwd)/vitalface-tunnel-urls.txt"
 
 # --- 3. Password del database -----------------------------------------------
 
@@ -244,6 +254,21 @@ extract_tunnel_url() {
     return 1
 }
 
+# Writes (overwrites) a small, easy-to-find/share summary of the current tunnel URLs — called once
+# per URL as soon as it's known, so the file is useful even if the script fails or is interrupted
+# before both tunnels are up, not just at the very end.
+write_urls_file() {
+    {
+        printf 'VitalFace Station — URL pubblici (Cloudflare Quick Tunnel)\n'
+        printf 'Generato: %s\n\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+        printf 'Kiosk (apri questo sul dispositivo/tablet): %s\n' "${WEB_URL:-<non ancora disponibile>}"
+        printf 'API (uso interno, CORS ristretto al kiosk sopra): %s\n\n' "${API_URL:-<non ancora disponibile>}"
+        printf 'Questi URL sono temporanei: cambiano ad ogni riavvio dello script e restano attivi\n'
+        printf 'finché lo script resta in esecuzione.\n\n'
+        printf 'Log completo di questa esecuzione: %s\n' "$LOG_FILE"
+    } > "$URLS_FILE"
+}
+
 log "Apro il tunnel Cloudflare per l'API (porta $API_PORT) — output live qui sotto:"
 "$CLOUDFLARED_BIN" tunnel --url "http://localhost:$API_PORT" > "$API_TUNNEL_LOG" 2>&1 &
 API_TUNNEL_PID=$!
@@ -252,6 +277,8 @@ API_TAIL_PID=$!
 
 API_URL="$(extract_tunnel_url "$API_TUNNEL_LOG")" || die "non sono riuscito a leggere l'URL del tunnel API entro 60s — controlla $API_TUNNEL_LOG"
 log "API pubblica: $API_URL"
+write_urls_file
+log "URL scritto anche su file: $URLS_FILE"
 
 # --- 7. Ricrea il kiosk con l'URL dell'API iniettato a runtime --------------
 
@@ -273,6 +300,8 @@ WEB_TAIL_PID=$!
 
 WEB_URL="$(extract_tunnel_url "$WEB_TUNNEL_LOG")" || die "non sono riuscito a leggere l'URL del tunnel kiosk entro 60s — controlla $WEB_TUNNEL_LOG"
 log "Kiosk pubblico: $WEB_URL"
+write_urls_file
+log "URL scritti anche su file: $URLS_FILE"
 
 # --- 9. Aggiorna il CORS dell'API con l'origine pubblica del kiosk ----------
 
@@ -300,6 +329,9 @@ cat <<EOF
    Per fermarli: (cd "$TARGET_DIR/VitalFace" && docker compose down)
  - Premi Ctrl+C qui per chiudere SOLO i due tunnel pubblici (l'app resta raggiungibile
    in locale su http://localhost:$WEB_PORT e http://localhost:$API_PORT).
+
+ Gli URL qui sopra sono salvati anche su: $URLS_FILE
+ Il log completo di questa esecuzione è in: $LOG_FILE
 ================================================================================
 
 EOF
