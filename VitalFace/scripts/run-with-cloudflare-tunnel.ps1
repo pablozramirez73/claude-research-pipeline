@@ -93,15 +93,31 @@ function Wait-ForHttp {
 }
 
 function Get-TunnelUrl {
-    param([string]$LogPath, [int]$Attempts = 30)
+    # Streams cloudflared's own output to the console live (both the primary log and its stderr
+    # sibling), exactly as if it were run directly — so the URL is visible even if the regex
+    # match below is ever thrown off by a future cloudflared output format change.
+    param([string]$LogPath, [int]$Attempts = 60)
+    $linesShown = 0
     for ($i = 0; $i -lt $Attempts; $i++) {
-        if (Test-Path $LogPath) {
-            $match = Select-String -Path $LogPath -Pattern 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' -ErrorAction SilentlyContinue |
-                Select-Object -First 1
-            if ($match) { return $match.Matches[0].Value }
+        foreach ($candidate in @($LogPath, "$LogPath.err")) {
+            if (Test-Path $candidate) {
+                $content = Get-Content $candidate -ErrorAction SilentlyContinue
+                if ($content.Count -gt $linesShown) {
+                    $content[$linesShown..($content.Count - 1)] | ForEach-Object { Write-Host $_ }
+                    $linesShown = $content.Count
+                }
+                $match = $content | Select-String -Pattern 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' | Select-Object -First 1
+                if ($match) { return $match.Matches[0].Value }
+            }
+        }
+        if ($i -gt 0 -and $i % 10 -eq 0) {
+            Write-Host "    ... ancora in attesa dell'URL del tunnel (guarda l'output di cloudflared qui sopra)"
         }
         Start-Sleep -Seconds 1
     }
+    Write-Host ""
+    Write-Host "--- ultime righe di $LogPath ---"
+    Get-Content $LogPath -Tail 20 -ErrorAction SilentlyContinue
     return $null
 }
 
@@ -206,8 +222,7 @@ Write-Step 'Apro il tunnel Cloudflare per l''API (porta 8080)'
 $script:ApiTunnelProcess = Start-CloudflaredTunnel -LocalUrl 'http://localhost:8080' -LogPath $ApiTunnelLog
 
 $ApiUrl = Get-TunnelUrl -LogPath $ApiTunnelLog
-if (-not $ApiUrl) { $ApiUrl = Get-TunnelUrl -LogPath "$ApiTunnelLog.err" }
-if (-not $ApiUrl) { Fail "non sono riuscito a leggere l'URL del tunnel API — controlla $ApiTunnelLog" }
+if (-not $ApiUrl) { Fail "non sono riuscito a leggere l'URL del tunnel API entro 60s — controlla $ApiTunnelLog" }
 Write-Step "API pubblica: $ApiUrl"
 
 # --- 7. Ricrea il kiosk con l'URL dell'API iniettato a runtime --------------
@@ -227,8 +242,7 @@ Write-Step 'Apro il tunnel Cloudflare per il kiosk (porta 8081)'
 $script:WebTunnelProcess = Start-CloudflaredTunnel -LocalUrl 'http://localhost:8081' -LogPath $WebTunnelLog
 
 $WebUrl = Get-TunnelUrl -LogPath $WebTunnelLog
-if (-not $WebUrl) { $WebUrl = Get-TunnelUrl -LogPath "$WebTunnelLog.err" }
-if (-not $WebUrl) { Fail "non sono riuscito a leggere l'URL del tunnel kiosk — controlla $WebTunnelLog" }
+if (-not $WebUrl) { Fail "non sono riuscito a leggere l'URL del tunnel kiosk entro 60s — controlla $WebTunnelLog" }
 Write-Step "Kiosk pubblico: $WebUrl"
 
 # --- 9. Aggiorna il CORS dell'API con l'origine pubblica del kiosk ----------

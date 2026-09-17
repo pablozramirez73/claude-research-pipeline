@@ -33,6 +33,8 @@ API_TUNNEL_LOG="/tmp/vitalface-tunnel-api.log"
 WEB_TUNNEL_LOG="/tmp/vitalface-tunnel-web.log"
 API_TUNNEL_PID=""
 WEB_TUNNEL_PID=""
+API_TAIL_PID=""
+WEB_TAIL_PID=""
 
 log() { printf '\n\033[1;34m==> %s\033[0m\n' "$1"; }
 die() { printf '\n\033[1;31mErrore: %s\033[0m\n' "$1" >&2; exit 1; }
@@ -40,6 +42,8 @@ die() { printf '\n\033[1;31mErrore: %s\033[0m\n' "$1" >&2; exit 1; }
 cleanup() {
     if [ -n "$API_TUNNEL_PID" ]; then kill "$API_TUNNEL_PID" 2>/dev/null || true; fi
     if [ -n "$WEB_TUNNEL_PID" ]; then kill "$WEB_TUNNEL_PID" 2>/dev/null || true; fi
+    if [ -n "$API_TAIL_PID" ]; then kill "$API_TAIL_PID" 2>/dev/null || true; fi
+    if [ -n "$WEB_TAIL_PID" ]; then kill "$WEB_TAIL_PID" 2>/dev/null || true; fi
 }
 trap cleanup EXIT INT TERM
 
@@ -146,24 +150,31 @@ log "API pronta su http://localhost:8080"
 # --- 6. Tunnel per l'API -----------------------------------------------------
 
 extract_tunnel_url() {
-    logfile="$1"; attempts=30
+    logfile="$1"; total_attempts=60; attempts="$total_attempts"
     while [ "$attempts" -gt 0 ]; do
         url="$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' "$logfile" 2>/dev/null | head -n1 || true)"
         if [ -n "$url" ]; then
             printf '%s' "$url"
             return 0
         fi
+        if [ $(( (total_attempts - attempts) % 10 )) -eq 0 ] && [ "$attempts" -ne "$total_attempts" ]; then
+            printf '    ... ancora in attesa dell'"'"'URL del tunnel (guarda l'"'"'output di cloudflared qui sopra)\n' >&2
+        fi
         attempts=$((attempts - 1))
         sleep 1
     done
+    printf '\n--- ultime righe di %s ---\n' "$logfile" >&2
+    tail -n 20 "$logfile" >&2 2>/dev/null || true
     return 1
 }
 
-log "Apro il tunnel Cloudflare per l'API (porta 8080)"
+log "Apro il tunnel Cloudflare per l'API (porta 8080) — output live qui sotto:"
 "$CLOUDFLARED_BIN" tunnel --url http://localhost:8080 > "$API_TUNNEL_LOG" 2>&1 &
 API_TUNNEL_PID=$!
+tail -n +1 -f "$API_TUNNEL_LOG" 2>/dev/null &
+API_TAIL_PID=$!
 
-API_URL="$(extract_tunnel_url "$API_TUNNEL_LOG")" || die "non sono riuscito a leggere l'URL del tunnel API — controlla $API_TUNNEL_LOG"
+API_URL="$(extract_tunnel_url "$API_TUNNEL_LOG")" || die "non sono riuscito a leggere l'URL del tunnel API entro 60s — controlla $API_TUNNEL_LOG"
 log "API pubblica: $API_URL"
 
 # --- 7. Ricrea il kiosk con l'URL dell'API iniettato a runtime --------------
@@ -177,11 +188,13 @@ log "Kiosk pronto su http://localhost:8081"
 
 # --- 8. Tunnel per il kiosk --------------------------------------------------
 
-log "Apro il tunnel Cloudflare per il kiosk (porta 8081)"
+log "Apro il tunnel Cloudflare per il kiosk (porta 8081) — output live qui sotto:"
 "$CLOUDFLARED_BIN" tunnel --url http://localhost:8081 > "$WEB_TUNNEL_LOG" 2>&1 &
 WEB_TUNNEL_PID=$!
+tail -n +1 -f "$WEB_TUNNEL_LOG" 2>/dev/null &
+WEB_TAIL_PID=$!
 
-WEB_URL="$(extract_tunnel_url "$WEB_TUNNEL_LOG")" || die "non sono riuscito a leggere l'URL del tunnel kiosk — controlla $WEB_TUNNEL_LOG"
+WEB_URL="$(extract_tunnel_url "$WEB_TUNNEL_LOG")" || die "non sono riuscito a leggere l'URL del tunnel kiosk entro 60s — controlla $WEB_TUNNEL_LOG"
 log "Kiosk pubblico: $WEB_URL"
 
 # --- 9. Aggiorna il CORS dell'API con l'origine pubblica del kiosk ----------
