@@ -153,13 +153,46 @@ log "Avvio PostgreSQL e l'API"
 docker compose up -d postgres api
 verify_port_published "api" "8080" "$API_PORT"
 
+# Known, safe-to-auto-fix failure mode: re-running this script from a different clone of the same
+# repo (same containing folder name -> same Docker Compose project name -> same shared Postgres
+# volume) leaves an already-initialized database whose password no longer matches a freshly
+# generated .env. There is no real data at stake in this demo/tunnel deployment, so recover by
+# wiping the volume and letting Postgres re-initialize with the current .env password, instead of
+# making the user diagnose and fix it by hand.
+reset_postgres_volume() {
+    printf '\n    Rilevata mancata corrispondenza di password con un volume Postgres preesistente — reinizializzo il database (nessun dato reale da perdere in questo demo).\n' >&2
+    docker compose down -v
+    docker compose up -d postgres api
+    verify_port_published "api" "8080" "$API_PORT"
+}
+
 wait_for_http() {
     url="$1"; label="$2"; service="$3"; total_attempts=60; attempts="$total_attempts"
+    body_file="$(mktemp)"
+    recovered=0
     while [ "$attempts" -gt 0 ]; do
         # --noproxy '*': a system-configured proxy would otherwise try to route this localhost
         # request through itself and fail, even though the container is perfectly reachable directly.
-        if curl -fsS --noproxy '*' -o /dev/null "$url" 2>/dev/null; then
+        http_code="$(curl -s --noproxy '*' -o "$body_file" -w '%{http_code}' "$url" 2>/dev/null || echo "000")"
+        if [ "$http_code" = "200" ]; then
+            rm -f "$body_file"
             return 0
+        fi
+        if [ "$http_code" != "000" ]; then
+            # The server responded, just not with success — retrying blindly won't fix a bad
+            # response, so either auto-recover (once) from a known cause, or fail fast with the
+            # actual body instead of waiting out the full timeout.
+            if [ "$service" = "api" ] && [ "$recovered" -eq 0 ] && grep -q "password authentication failed" "$body_file" 2>/dev/null; then
+                reset_postgres_volume
+                recovered=1
+                attempts="$total_attempts"
+                sleep 3
+                continue
+            fi
+            printf '\n--- %s ha risposto con HTTP %s ---\n' "$label" "$http_code" >&2
+            cat "$body_file" >&2 2>/dev/null
+            printf '\n' >&2
+            break
         fi
         if [ $(( (total_attempts - attempts) % 5 )) -eq 0 ] && [ "$attempts" -ne "$total_attempts" ]; then
             printf '    ... ancora in attesa: %s (%s)\n' "$label" "$url" >&2
@@ -167,9 +200,10 @@ wait_for_http() {
         attempts=$((attempts - 1))
         sleep 2
     done
+    rm -f "$body_file"
     printf '\n--- ultime righe di "docker compose logs %s" ---\n' "$service" >&2
     docker compose logs --tail 30 "$service" >&2 2>/dev/null || true
-    die "$label non ha risposto in tempo su $url dopo 120s — vedi i log sopra (o 'docker compose logs $service')."
+    die "$label non ha risposto positivamente su $url — vedi sopra (o 'docker compose logs $service')."
 }
 
 wait_for_http "http://localhost:$API_PORT/health" "L'API" "api"

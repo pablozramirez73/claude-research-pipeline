@@ -92,9 +92,26 @@ function Set-EnvFileVar {
     Set-Content -Path $Path -Value $updated
 }
 
+function Reset-PostgresVolume {
+    # Known, safe-to-auto-fix failure mode: re-running this script from a different clone of the
+    # same repo (same containing folder name -> same Docker Compose project name -> same shared
+    # Postgres volume) leaves an already-initialized database whose password no longer matches a
+    # freshly generated .env. There is no real data at stake in this demo/tunnel deployment, so
+    # recover by wiping the volume and letting Postgres re-initialize with the current .env
+    # password, instead of making the user diagnose and fix it by hand.
+    Write-Host ""
+    Write-Host "    Rilevata mancata corrispondenza di password con un volume Postgres preesistente — reinizializzo il database (nessun dato reale da perdere in questo demo)."
+    docker compose down -v
+    docker compose up -d postgres api
+    Test-PortPublished -Service 'api' -ContainerPort 8080 -HostPort $ApiPort
+}
+
 function Wait-ForHttp {
     param([string]$Url, [string]$Label, [string]$Service, [int]$Attempts = 60)
-    for ($i = 0; $i -lt $Attempts; $i++) {
+    $totalAttempts = $Attempts
+    $remaining = $Attempts
+    $recovered = $false
+    while ($remaining -gt 0) {
         try {
             # -NoProxy: a system/VPN proxy (common on corporate Windows machines) would otherwise
             # try to route this localhost request through itself and fail, even though the
@@ -102,16 +119,35 @@ function Wait-ForHttp {
             $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 3 -NoProxy
             if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) { return }
         }
+        catch [Microsoft.PowerShell.Commands.HttpResponseException] {
+            # The server responded, just not with success — retrying blindly won't fix a bad
+            # response, so either auto-recover (once) from a known cause, or fail fast with the
+            # actual body instead of waiting out the full timeout.
+            $body = $null
+            try { $body = $_.ErrorDetails.Message } catch { }
+            if ($Service -eq 'api' -and -not $recovered -and $body -and $body -match 'password authentication failed') {
+                Reset-PostgresVolume
+                $recovered = $true
+                $remaining = $totalAttempts
+                Start-Sleep -Seconds 3
+                continue
+            }
+            Write-Host ""
+            Write-Host "--- $Label ha risposto con errore ---"
+            if ($body) { Write-Host $body }
+            break
+        }
         catch { }
-        if ($i -gt 0 -and $i % 5 -eq 0) {
+        if (($totalAttempts - $remaining) -gt 0 -and ($totalAttempts - $remaining) % 5 -eq 0) {
             Write-Host "    ... ancora in attesa: $Label ($Url)"
         }
+        $remaining--
         Start-Sleep -Seconds 2
     }
     Write-Host ""
     Write-Host "--- ultime righe di 'docker compose logs $Service' ---"
     docker compose logs --tail 30 $Service
-    Fail "$Label non ha risposto in tempo su $Url dopo 120s — vedi i log sopra (o 'docker compose logs $Service')."
+    Fail "$Label non ha risposto positivamente su $Url — vedi sopra (o 'docker compose logs $Service')."
 }
 
 function Get-TunnelUrl {
