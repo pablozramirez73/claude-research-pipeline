@@ -121,10 +121,17 @@ function Reset-PostgresVolume {
 }
 
 function Wait-ForHttp {
-    param([string]$Url, [string]$Label, [string]$Service, [int]$Attempts = 60)
+    # 90 attempts * 2s = up to 3 minutes: on Windows, the very first time a container publishes a
+    # brand-new host port, Windows Defender Firewall can silently prompt to allow Docker's
+    # networking component through — while that prompt sits unanswered, every connection attempt
+    # times out with no HTTP response at all (not even an error one), indistinguishable from the
+    # container just being slow. 60 attempts (2 minutes) has been seen to run out before someone
+    # notices and clicks "Allow"; give it more room before giving up.
+    param([string]$Url, [string]$Label, [string]$Service, [int]$Attempts = 90)
     $totalAttempts = $Attempts
     $remaining = $Attempts
     $recovered = $false
+    $sawAnyHttpResponse = $false
     while ($remaining -gt 0) {
         try {
             # -NoProxy: a system/VPN proxy (common on corporate Windows machines) would otherwise
@@ -134,6 +141,7 @@ function Wait-ForHttp {
             if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) { return }
         }
         catch [Microsoft.PowerShell.Commands.HttpResponseException] {
+            $sawAnyHttpResponse = $true
             # The server responded, just not with success — retrying blindly won't fix a bad
             # response, so either auto-recover (once) from a known cause, or fail fast with the
             # actual body instead of waiting out the full timeout.
@@ -161,7 +169,14 @@ function Wait-ForHttp {
     Write-Host ""
     Write-Host "--- ultime righe di 'docker compose logs $Service' ---"
     docker compose logs --tail 30 $Service
-    Fail "$Label non ha risposto positivamente su $Url — vedi sopra (o 'docker compose logs $Service')."
+    $firewallHint = ''
+    if (-not $sawAnyHttpResponse) {
+        # Every attempt failed at the connection level (never even got back a bad HTTP response) —
+        # the classic signature of an unanswered Windows Defender Firewall prompt for Docker's
+        # networking component on a freshly published port, not a slow/broken container.
+        $firewallHint = " Se il container risulta sano nei log sopra, controlla se e' comparsa (magari dietro un'altra finestra) una richiesta di Windows Defender Firewall per consentire l'accesso alla rete a Docker/dotnet, e clicca 'Consenti accesso' — finche' resta senza risposta, ogni connessione viene bloccata in silenzio esattamente cosi'."
+    }
+    Fail "$Label non ha risposto positivamente su $Url — vedi sopra (o 'docker compose logs $Service').$firewallHint"
 }
 
 function Get-TunnelUrl {

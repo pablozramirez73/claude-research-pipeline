@@ -212,9 +212,15 @@ reset_postgres_volume() {
 }
 
 wait_for_http() {
-    url="$1"; label="$2"; service="$3"; total_attempts=60; attempts="$total_attempts"
+    # 90 attempts * 2s = up to 3 minutes: the first time a container publishes a brand-new host
+    # port, a host firewall (Windows Defender Firewall under WSL is the classic case) can silently
+    # prompt to allow the container runtime's networking component through — while that prompt sits
+    # unanswered, every connection attempt times out with no response at all, indistinguishable
+    # from the container just being slow to start. Give it more room before giving up.
+    url="$1"; label="$2"; service="$3"; total_attempts=90; attempts="$total_attempts"
     body_file="$(mktemp)"
     recovered=0
+    saw_any_http_response=0
     while [ "$attempts" -gt 0 ]; do
         # --noproxy '*': a system-configured proxy would otherwise try to route this localhost
         # request through itself and fail, even though the container is perfectly reachable directly.
@@ -224,6 +230,7 @@ wait_for_http() {
             return 0
         fi
         if [ "$http_code" != "000" ]; then
+            saw_any_http_response=1
             # The server responded, just not with success — retrying blindly won't fix a bad
             # response, so either auto-recover (once) from a known cause, or fail fast with the
             # actual body instead of waiting out the full timeout.
@@ -248,7 +255,14 @@ wait_for_http() {
     rm -f "$body_file"
     printf '\n--- ultime righe di "docker compose logs %s" ---\n' "$service" >&2
     docker compose logs --tail 30 "$service" >&2 2>/dev/null || true
-    die "$label non ha risposto positivamente su $url — vedi sopra (o 'docker compose logs $service')."
+    firewall_hint=""
+    if [ "$saw_any_http_response" -eq 0 ]; then
+        # Every attempt failed at the connection level (never even got back a bad HTTP response) —
+        # the classic signature of an unanswered host firewall prompt on a freshly published port
+        # (Windows Defender Firewall under WSL is the common case), not a slow/broken container.
+        firewall_hint=" Se il container risulta sano nei log sopra, controlla se e' comparsa (magari dietro un'altra finestra) una richiesta del firewall per consentire l'accesso alla rete — finche' resta senza risposta, ogni connessione viene bloccata in silenzio esattamente cosi'."
+    fi
+    die "$label non ha risposto positivamente su $url — vedi sopra (o 'docker compose logs $service').$firewall_hint"
 }
 
 wait_for_http "http://localhost:$API_PORT/health" "L'API" "api"

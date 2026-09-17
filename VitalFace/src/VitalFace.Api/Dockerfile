@@ -19,6 +19,12 @@ RUN dotnet publish src/VitalFace.Api/VitalFace.Api.csproj -c Release -o /app/pub
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine AS runtime
 WORKDIR /app
+# Npgsql probes for GSSAPI (Kerberos) support at connection time regardless of whether the
+# configured auth actually uses it (password auth here does not); without this, that probe fails
+# with a "Cannot load library libgssapi_krb5.so.2" log line on every connection attempt — harmless
+# since password auth doesn't need it, but noisy enough to look like a real startup error while
+# debugging.
+RUN apk add --no-cache krb5-libs
 RUN addgroup -S vitalface && adduser -S vitalface -G vitalface
 COPY --from=build /app/publish .
 USER vitalface
