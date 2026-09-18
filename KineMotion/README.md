@@ -118,13 +118,22 @@ quindi la verifica qui è stata end-to-end, non solo build/unit test:
   ma il modulo MediaPipe Tasks Vision non può essere scaricato (CDN bloccata dalla policy di rete
   del sandbox, vedi sotto) e l'interfaccia mostra il messaggio d'errore italiano previsto invece di
   un crash silenzioso.
+- **Superficie API MediaPipe verificata contro il codice sorgente reale**, non solo a memoria: con
+  accesso a un clone di google/mediapipe, `pose_landmarker.ts` e `fileset_resolver.ts.template`
+  confermano che `FilesetResolver.forVisionTasks(basePath)`, le opzioni
+  `numPoses`/`minPoseDetectionConfidence`/`minPosePresenceConfidence`/`minTrackingConfidence`, la
+  firma `detectForVideo(videoFrame, timestampMs)` (sincrona, senza callback, ritorna
+  `PoseLandmarkerResult` quando il running mode è `VIDEO`) e la forma del risultato
+  (`result.landmarks: NormalizedLandmark[][]`, un array di pose ciascuna con landmark
+  `{x, y, z}` normalizzati) usate in `pose-game-bridge.js` corrispondono esattamente all'API reale.
 - **Non verificato in questa sessione** (richiede una rete reale + webcam vera): il flusso completo
   cattura-webcam → `PoseLandmarker.detectForVideo` → calcolo angoli → rendering p5.js del gioco.
   `cdn.jsdelivr.net` (da cui si caricano sia `@mediapipe/tasks-vision` che `p5.js`) è bloccato dalla
-  policy di rete di questo ambiente agente (`connect_rejected` sul proxy). La matematica di
-  `pose-game-bridge.js` (indici landmark BlazePose a 33 punti, angoli via prodotto scalare) e la
-  logica di gioco di `p5-bird.js` sono state scritte e rilette contro la documentazione ufficiale
-  delle rispettive API, ma vanno accettate su hardware reale con rete reale prima del rilascio.
+  policy di rete di questo ambiente agente (`connect_rejected` sul proxy), quindi l'API è stata
+  verificata contro il sorgente ma non eseguita realmente end-to-end con un modello `.task` vero.
+  Gli indici landmark BlazePose a 33 punti usati per gli angoli (spalla/gomito/tronco) sono la
+  topologia standard pubblicata da Google, ma vanno comunque accettati su hardware reale con
+  webcam vera prima del rilascio.
 
 ## Note tecniche e scostamenti dal brief originale
 
