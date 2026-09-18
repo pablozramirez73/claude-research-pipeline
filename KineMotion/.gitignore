@@ -1,0 +1,20 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+
+## Test results
+[Tt]est[Rr]esult*/
+*.trx
+
+## Rider / VS Code
+.idea/
+.vs/
+*.swp
+
+## EF Core
+*.dbmdl
+
+## MediaPipe models — large Google-licensed binaries, downloaded at deploy time (see README).
+src/KineMotion.Web/wwwroot/models/*.task

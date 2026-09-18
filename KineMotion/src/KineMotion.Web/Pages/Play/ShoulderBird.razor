@@ -1,0 +1,170 @@
+@page "/play/shoulder-bird/{PrescriptionId:guid}"
+@inject KineMotionApiClient Api
+@inject RehabHubClient Hub
+@inject PoseGameInterop Interop
+@using KineMotion.Contracts
+@implements IAsyncDisposable
+
+<PageTitle>ShoulderBirdFlight — KineMotion</PageTitle>
+
+@if (_prescription is null)
+{
+    <p>Caricamento prescrizione...</p>
+}
+else if (_summary is not null)
+{
+    <h2>Sessione completata</h2>
+    <ul>
+        <li>Ripetizioni: @_summary.RepsCompleted / @_prescription.TargetReps</li>
+        <li>ROM massimo: @_summary.MaxAngleDeg.ToString("F1")° (target @_prescription.TargetRomDeg°)</li>
+        <li>Fluidità del movimento (jerk normalizzato, più basso = più fluido): @_summary.SmoothnessScore.ToString("F2")</li>
+        <li>Compenso del tronco rilevato: @(_summary.CompensationDetected ? $"Sì ({_summary.CompensationRatio:P0} del tempo)" : "No")</li>
+    </ul>
+    <a class="btn btn-secondary" href="/">Torna alla home</a>
+}
+else
+{
+    <h2>ShoulderBirdFlight</h2>
+    <p>Solleva il braccio di lato (abduzione) per far volare l'uccellino. Obiettivo: @_prescription.TargetReps ripetizioni.</p>
+
+    <video id="pose-video" autoplay muted playsinline style="display:none;"></video>
+    <div id="game-container" style="width: 800px; max-width: 100%;"></div>
+
+    <div class="mt-2">
+        <span>Angolo spalla: @_currentAngle.ToString("F0")°</span> —
+        <span>Ripetizioni: @_repsCompleted / @_prescription.TargetReps</span>
+    </div>
+
+    @if (!_tracking)
+    {
+        <button class="btn btn-success mt-2" @onclick="StartAsync">Avvia webcam e gioco</button>
+    }
+    else
+    {
+        <button class="btn btn-outline-danger mt-2" @onclick="() => EndSessionAsync()">Termina sessione</button>
+    }
+
+    @if (_error is not null)
+    {
+        <p class="text-danger mt-2">@_error</p>
+    }
+}
+
+@code {
+    [Parameter] public Guid PrescriptionId { get; set; }
+
+    private PrescriptionDto? _prescription;
+    private SessionSummaryDto? _summary;
+    private readonly List<PoseFrameDto> _frames = [];
+    private DotNetObjectReference<object>? _selfRef;
+    private bool _tracking;
+    private int _repsCompleted;
+    private double _currentAngle;
+    private string? _error;
+    private int _frameCounter;
+
+    // MediaPipe's VIDEO running mode is expected to deliver frames at roughly this rate; used
+    // only for the tremor FFT bin math server-side and for the live-stream throttle below, not
+    // to gate capture (every detected frame is still recorded in _frames).
+    private const double AssumedSampleRateHz = 30.0;
+    private const int LiveStreamEveryNthFrame = 5;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _prescription = await Api.GetPrescriptionAsync(PrescriptionId);
+        if (_prescription is null)
+        {
+            _error = $"Prescrizione {PrescriptionId} non trovata.";
+        }
+    }
+
+    private async Task StartAsync()
+    {
+        if (_prescription is null) return;
+
+        _error = null;
+        _frames.Clear();
+        _repsCompleted = 0;
+        _frameCounter = 0;
+
+        try
+        {
+            _selfRef = DotNetObjectReference.Create<object>(this);
+            await Hub.StartAsync();
+            var started = await Interop.StartPoseTrackingAsync("pose-video", _selfRef);
+            if (!started)
+            {
+                _error = "Impossibile avviare la webcam o MediaPipe. Verifica i permessi della fotocamera.";
+                return;
+            }
+            await Interop.StartShoulderBirdGameAsync("game-container", _selfRef);
+            _tracking = true;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Errore all'avvio: {ex.Message}";
+        }
+    }
+
+    [JSInvokable]
+    public async void OnFrame(PoseFrameDto frame)
+    {
+        _frames.Add(frame);
+        _currentAngle = frame.ShoulderAbductionDeg;
+        _frameCounter++;
+
+        if (_prescription is not null && _frameCounter % LiveStreamEveryNthFrame == 0)
+        {
+            var metric = new PatientMetricDto(
+                _prescription.PatientId, _prescription.TherapistId, frame.TimestampMs, frame.ShoulderAbductionDeg, _repsCompleted);
+            await Hub.StreamMetricAsync(metric);
+        }
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    [JSInvokable]
+    public async void OnRepCompleted(int repsSoFar)
+    {
+        _repsCompleted = repsSoFar;
+        await InvokeAsync(StateHasChanged);
+
+        if (_prescription is not null && repsSoFar >= _prescription.TargetReps)
+        {
+            await EndSessionAsync();
+        }
+    }
+
+    private async Task EndSessionAsync()
+    {
+        if (_prescription is null || _summary is not null) return;
+
+        await Interop.StopGameAsync();
+        await Interop.StopPoseTrackingAsync();
+        _tracking = false;
+
+        try
+        {
+            var request = new CompleteSessionRequest(
+                _prescription.Id, _prescription.PatientId, _prescription.TherapistId, _repsCompleted, AssumedSampleRateHz, _frames);
+            _summary = await Api.CompleteSessionAsync(request);
+        }
+        catch (Exception ex)
+        {
+            _error = $"Sessione terminata localmente ma non salvata sul server: {ex.Message}";
+        }
+
+        StateHasChanged();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_tracking)
+        {
+            await Interop.StopGameAsync();
+            await Interop.StopPoseTrackingAsync();
+        }
+        _selfRef?.Dispose();
+        await Hub.DisposeAsync();
+    }
+}

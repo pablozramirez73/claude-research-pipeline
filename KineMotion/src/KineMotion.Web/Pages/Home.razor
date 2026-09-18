@@ -1,0 +1,57 @@
+@page "/"
+@inject KineMotionApiClient Api
+@inject NavigationManager Nav
+@using KineMotion.Contracts
+
+<PageTitle>KineMotion Rehab</PageTitle>
+
+<h1>KineMotion Rehab</h1>
+<p>Telereabilitazione gamificata: giochi con il corpo, il sistema misura ROM, velocità e compensi.</p>
+
+<div class="card" style="max-width: 32rem;">
+    <div class="card-body">
+        <h5 class="card-title">Demo rapida — ShoulderBirdFlight</h5>
+        <p class="card-text">
+            Crea una prescrizione demo (10 ripetizioni, target 120° di abduzione della spalla) e
+            avvia il gioco. In un ambiente reale la prescrizione arriva dal fisioterapista tramite
+            il Clinician Portal (non incluso in questo scaffold — vedi README).
+        </p>
+        <button class="btn btn-primary" @onclick="StartDemoAsync" disabled="@_starting">
+            @(_starting ? "Creazione prescrizione..." : "Avvia demo")
+        </button>
+        @if (_error is not null)
+        {
+            <p class="text-danger mt-2">@_error</p>
+        }
+    </div>
+</div>
+
+@code {
+    private bool _starting;
+    private string? _error;
+
+    // Fixed demo identities — there is no login/auth in this scaffold (see README, "Cosa non è
+    // stato implementato"). A real deployment issues these from the clinician's own patient roster.
+    private static readonly Guid DemoPatientId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+    private static readonly Guid DemoTherapistId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+
+    private async Task StartDemoAsync()
+    {
+        _starting = true;
+        _error = null;
+        try
+        {
+            var prescription = await Api.CreateDemoPrescriptionAsync(
+                DemoPatientId, DemoTherapistId, ExerciseTypeDto.ShoulderBirdFlight, targetReps: 10, targetRomDeg: 120);
+            Nav.NavigateTo($"/play/shoulder-bird/{prescription.Id}");
+        }
+        catch (Exception ex)
+        {
+            _error = $"Impossibile contattare l'Api: {ex.Message}";
+        }
+        finally
+        {
+            _starting = false;
+        }
+    }
+}

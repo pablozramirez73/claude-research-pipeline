@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <ItemGroup>
+    <ProjectReference Include="..\KineMotion.Core\KineMotion.Core.csproj" />
+    <ProjectReference Include="..\KineMotion.Contracts\KineMotion.Contracts.csproj" />
+    <ProjectReference Include="..\KineMotion.Infrastructure\KineMotion.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+</Project>

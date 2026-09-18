@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/KineMotion.Api/KineMotion.Api.csproj" />
+    <Project Path="src/KineMotion.Contracts/KineMotion.Contracts.csproj" />
+    <Project Path="src/KineMotion.Core/KineMotion.Core.csproj" />
+    <Project Path="src/KineMotion.Infrastructure/KineMotion.Infrastructure.csproj" />
+    <Project Path="src/KineMotion.Web/KineMotion.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/KineMotion.Core.Tests/KineMotion.Core.Tests.csproj" />
+  </Folder>
+</Solution>
